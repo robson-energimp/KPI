@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual env
+venv/
+.env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Arquivos gerados (regeneráveis)
+grafico_*.png
+Relatorio_Semanal_*.pdf
+Relatorio_Semanal_Completo.xlsx
+relatorio_atividades_qualidade.xlsx
+
+# PCM local (estado temporário)
+pcm_atividades_semana.json
+
+# PDFs na subpasta
+Resumo de Atividades via PCM/
