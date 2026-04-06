@@ -29,7 +29,11 @@ from backend import (
     PARQUES_POR_REGIONAL, TODOS_PARQUES, CORES_REGIONAL,
     HAS_PSYCOPG2
 )
-from relatorio_pdf_corporativo import gerar_relatorio_pdf
+from relatorio_pdf_corporativo import (
+    gerar_relatorio_pdf,
+    gerar_relatorio_completo_por_semana,
+    gerar_relatorio_semana_anterior,
+)
 
 # =============================================================================
 # CONFIGURAÇÃO DA PÁGINA
@@ -670,54 +674,160 @@ with tab2:
 # TAB 3: GERAR RELATÓRIO
 # =============================================================================
 with tab3:
-    st.markdown('<div class="section-title">📥 Gerar Relatório</div>',
+    st.markdown('<div class="section-title">📥 Gerar Relatório PDF</div>',
                 unsafe_allow_html=True)
 
     if not st.session_state.dados_carregados:
         st.warning("⚠️ Carregue os dados primeiro (aba Painel ou botão na sidebar)")
     else:
-        # Opções
-        col_o1, col_o2 = st.columns(2)
-        with col_o1:
-            st.markdown("**Conteúdo do Relatório:**")
-            inc_atividades = st.checkbox("Incluir atividades realizadas", value=True)
-            inc_pcm = st.checkbox("Incluir planejamento PCM", value=True)
-            inc_graficos = st.checkbox("Incluir gráficos", value=True)
+        logo_path = os.path.join(BASE_DIR, 'logo_energimp.png')
+        logo = logo_path if os.path.exists(logo_path) else None
+        pcm_data = carregar_pcm()
 
-        with col_o2:
-            st.markdown("**Formato:**")
-            formato = st.radio("Formato de saída", ["PDF", "Excel", "Ambos"],
-                               horizontal=True)
+        # ── OPÇÃO 1 ── Relatório Completo por Semana ──────────────────────────
+        with st.container():
+            st.markdown("""
+            <div style="
+                background: linear-gradient(135deg, #f0f4ff, #e8f0fe);
+                border-left: 5px solid #0D1B3E;
+                border-radius: 12px;
+                padding: 20px 24px;
+                margin-bottom: 18px;
+            ">
+                <div style="font-size:1.1rem; font-weight:700; color:#0D1B3E; margin-bottom:6px;">
+                    📊 Relatório Completo — Todas as Semanas
+                </div>
+                <div style="font-size:0.87rem; color:#546e7a;">
+                    Contém todas as atividades do período selecionado, organizadas semana a semana.
+                    Inclui: capa, visão geral por semana (KPIs, tabelas por regional e turbina,
+                    gráficos) e resumo acumulado ao final.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            col_c1, col_c2 = st.columns([3, 1])
+            with col_c2:
+                gerar_completo = st.button(
+                    "🚀 Gerar Completo",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_relatorio_completo"
+                )
+
+            if gerar_completo:
+                with st.spinner("Gerando Relatório Completo por Semana..."):
+                    try:
+                        pdf_path_completo = os.path.join(
+                            BASE_DIR, 'Relatorio_Completo_Por_Semana.pdf'
+                        )
+                        gerar_relatorio_completo_por_semana(
+                            ativ_t if ativ_t is not None else pd.DataFrame(),
+                            ativ_a if ativ_a is not None else pd.DataFrame(),
+                            output_path=pdf_path_completo,
+                            logo_path=logo
+                        )
+                        st.success("✅ Relatório Completo gerado!")
+                        with open(pdf_path_completo, 'rb') as f:
+                            st.download_button(
+                                label="📥 Download — Relatório Completo por Semana",
+                                data=f.read(),
+                                file_name=os.path.basename(pdf_path_completo),
+                                mime='application/pdf',
+                                use_container_width=True,
+                                key="dl_relatorio_completo"
+                            )
+                    except Exception as e:
+                        st.error(f"❌ Erro ao gerar relatório completo: {str(e)}")
+                        st.exception(e)
 
         st.markdown("---")
 
-        # Gerar
-        if st.button("🚀 Gerar Relatório", type="primary", use_container_width=True):
-            pcm_data = carregar_pcm() if inc_pcm else []
-            logo_path = os.path.join(BASE_DIR, 'logo_energimp.png')
-            logo = logo_path if os.path.exists(logo_path) else None
+        # ── OPÇÃO 2 ── Relatório Semana Anterior ─────────────────────────────
+        with st.container():
+            # Mostrar qual é a semana anterior
+            label_sem_ant = sem_anterior['label']
+            periodo_sem_ant = sem_anterior['periodo']
 
-            with st.spinner("Gerando relatório..."):
-                try:
-                    arquivos_gerados = []
+            # Contagem rápida das atividades da semana anterior
+            n_ativ_ant = 0
+            if ativ_t is not None and not ativ_t.empty:
+                n_ativ_ant = len(ativ_t[ativ_t['ano_semana'] == label_sem_ant])
 
-                    if formato in ["PDF", "Ambos"]:
-                        pdf_path = os.path.join(BASE_DIR,
-                                                'Relatorio_Semanal_Atividades_Qualidade.pdf')
-                        gerar_relatorio_pdf(
-                            ativ_t if inc_atividades else pd.DataFrame(),
-                            ativ_a if inc_atividades else pd.DataFrame(),
-                            pcm_data,
-                            output_path=pdf_path,
+            st.markdown(f"""
+            <div style="
+                background: linear-gradient(135deg, #fff8f0, #fff3e0);
+                border-left: 5px solid #E65100;
+                border-radius: 12px;
+                padding: 20px 24px;
+                margin-bottom: 18px;
+            ">
+                <div style="font-size:1.1rem; font-weight:700; color:#E65100; margin-bottom:6px;">
+                    ⏮️ Relatório Semana Anterior — {label_sem_ant}
+                </div>
+                <div style="font-size:0.87rem; color:#546e7a;">
+                    Período: <strong>{periodo_sem_ant}</strong> &nbsp;|&nbsp;
+                    Atividades registradas: <strong>{n_ativ_ant}</strong><br>
+                    Contém somente os dados da semana anterior: KPIs, gráficos de regional
+                    e por tipo, tabela detalhada de turbinas e auditorias de ferramentas.
+                    Inclui também o planejamento PCM para a próxima semana (se houver).
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            col_a1, col_a2 = st.columns([3, 1])
+            with col_a1:
+                inc_pcm_ant = st.checkbox(
+                    "Incluir planejamento PCM (próxima semana)",
+                    value=True,
+                    key="pcm_semana_ant"
+                )
+            with col_a2:
+                gerar_anterior = st.button(
+                    "🚀 Gerar Semana Ant.",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_relatorio_semana_ant"
+                )
+
+            if gerar_anterior:
+                pcm_rel = pcm_data if inc_pcm_ant else []
+                with st.spinner(f"Gerando Relatório Semana Anterior ({label_sem_ant})..."):
+                    try:
+                        pdf_path_ant = os.path.join(
+                            BASE_DIR, 'Relatorio_Semana_Anterior.pdf'
+                        )
+                        gerar_relatorio_semana_anterior(
+                            ativ_t if ativ_t is not None else pd.DataFrame(),
+                            ativ_a if ativ_a is not None else pd.DataFrame(),
+                            pcm_atividades=pcm_rel,
+                            output_path=pdf_path_ant,
                             logo_path=logo
                         )
-                        arquivos_gerados.append(('PDF', pdf_path))
+                        st.success(f"✅ Relatório da {label_sem_ant} gerado!")
+                        with open(pdf_path_ant, 'rb') as f:
+                            st.download_button(
+                                label=f"📥 Download — Relatório {label_sem_ant}",
+                                data=f.read(),
+                                file_name=os.path.basename(pdf_path_ant),
+                                mime='application/pdf',
+                                use_container_width=True,
+                                key="dl_relatorio_semana_ant"
+                            )
+                    except Exception as e:
+                        st.error(f"❌ Erro ao gerar relatório da semana anterior: {str(e)}")
+                        st.exception(e)
 
-                    if formato in ["Excel", "Ambos"]:
-                        excel_path = os.path.join(BASE_DIR,
-                                                  'Relatorio_Semanal_Completo.xlsx')
+        st.markdown("---")
+
+        # ── OPÇÃO 3 ── Exportar Excel ─────────────────────────────────────────
+        with st.expander("📊 Exportar Dados em Excel"):
+            if st.button("📥 Gerar Excel Completo", use_container_width=True,
+                         key="btn_excel"):
+                with st.spinner("Gerando Excel..."):
+                    try:
+                        excel_path = os.path.join(BASE_DIR, 'Relatorio_Semanal_Completo.xlsx')
                         with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-                            if inc_atividades and ativ_t is not None and not ativ_t.empty:
+                            if ativ_t is not None and not ativ_t.empty:
                                 resumo = ativ_t.groupby(['ano_semana', 'periodo_semana']).agg(
                                     atividades=('aerogerador', 'count'),
                                     maquinas=('aerogerador', 'nunique'),
@@ -731,29 +841,20 @@ with tab3:
                                                    'Tipo', 'Data', 'Semana']
                                 detalhe.to_excel(writer, sheet_name='Atividades', index=False)
 
-                            if inc_pcm and pcm_data:
-                                df_pcm = pd.DataFrame(pcm_data)
-                                df_pcm.to_excel(writer, sheet_name='PCM Planejado', index=False)
+                            if pcm_data:
+                                df_pcm_ex = pd.DataFrame(pcm_data)
+                                df_pcm_ex.to_excel(writer, sheet_name='PCM Planejado', index=False)
 
-                        arquivos_gerados.append(('Excel', excel_path))
-
-                    st.success(f"✅ Relatório(s) gerado(s) com sucesso!")
-
-                    # Botões de download
-                    for fmt, path in arquivos_gerados:
-                        with open(path, 'rb') as f:
-                            data = f.read()
-                        nome = os.path.basename(path)
-                        mime = 'application/pdf' if fmt == 'PDF' else \
-                            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-                        st.download_button(
-                            label=f"📥 Download {fmt} — {nome}",
-                            data=data,
-                            file_name=nome,
-                            mime=mime,
-                            use_container_width=True,
-                        )
-
-                except Exception as e:
-                    st.error(f"❌ Erro ao gerar relatório: {str(e)}")
-                    st.exception(e)
+                        st.success("✅ Excel gerado!")
+                        with open(excel_path, 'rb') as f:
+                            st.download_button(
+                                label="📥 Download Excel",
+                                data=f.read(),
+                                file_name=os.path.basename(excel_path),
+                                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                use_container_width=True,
+                                key="dl_excel"
+                            )
+                    except Exception as e:
+                        st.error(f"❌ Erro ao gerar Excel: {str(e)}")
+                        st.exception(e)

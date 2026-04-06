@@ -690,3 +690,527 @@ def gerar_relatorio_pdf(ativ_turbinas, ativ_auditorias, pcm_atividades,
         pass
 
     return output_path
+
+
+# =============================================================================
+# HELPER: gráfico de máquinas de uma semana
+# =============================================================================
+
+def _gerar_grafico_maquinas_semana(ativ_turbinas, semana, temp_dir):
+    """Gráfico de barras horizontais com as turbinas atendidas numa semana."""
+    df_sem = ativ_turbinas[ativ_turbinas['ano_semana'] == semana]
+    if df_sem.empty:
+        return None
+
+    maq = df_sem.groupby(['parque', 'aerogerador']).size().reset_index(name='ativ')
+    maq = maq.sort_values(['parque', 'aerogerador'])
+
+    if len(maq) > 30:
+        # Muitas máquinas → agrupar por parque
+        parque_count = df_sem.groupby('parque')['aerogerador'].count().sort_values()
+        fig, ax = plt.subplots(figsize=(12, max(3, len(parque_count) * 0.5)))
+        cores = [CORES_REGIONAL.get(
+            df_sem[df_sem['parque'] == p]['grupo_equipe'].iloc[0], '#9E9E9E'
+        ) for p in parque_count.index]
+        bars = ax.barh(parque_count.index, parque_count.values, color=cores,
+                       edgecolor='white', height=0.55)
+        for bar in bars:
+            w = bar.get_width()
+            ax.annotate(f'{int(w)}', xy=(w, bar.get_y() + bar.get_height() / 2),
+                        xytext=(4, 0), textcoords='offset points',
+                        ha='left', va='center', fontsize=8, fontweight='bold')
+        ax.set_xlabel('Atividades')
+        ax.set_title(f'Atividades por Parque — {semana}', fontsize=11, fontweight='bold', color=NAVY_HEX)
+    else:
+        fig, ax = plt.subplots(figsize=(12, max(3, len(maq) * 0.38)))
+        cores = [CORES_REGIONAL.get(
+            df_sem[df_sem['aerogerador'] == m]['grupo_equipe'].iloc[0], '#9E9E9E'
+        ) for m in maq['aerogerador']]
+        bars = ax.barh(maq['aerogerador'], maq['ativ'], color=cores,
+                       edgecolor='white', height=0.55)
+        for bar in bars:
+            w = bar.get_width()
+            ax.annotate(f'{int(w)}', xy=(w, bar.get_y() + bar.get_height() / 2),
+                        xytext=(4, 0), textcoords='offset points',
+                        ha='left', va='center', fontsize=8, fontweight='bold')
+        ax.set_xlabel('Atividades')
+        ax.set_title(f'Turbinas Atendidas — {semana}', fontsize=11, fontweight='bold', color=NAVY_HEX)
+
+    import matplotlib.ticker as _mt
+    ax.xaxis.set_major_locator(_mt.MaxNLocator(integer=True))
+    plt.tight_layout()
+    fname = f'maquinas_{semana.replace("/", "-")}.png'
+    path = os.path.join(temp_dir, fname)
+    plt.savefig(path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+    return path
+
+
+# =============================================================================
+# RELATÓRIO COMPLETO ORGANIZADO POR SEMANA
+# =============================================================================
+
+def gerar_relatorio_completo_por_semana(ativ_turbinas, ativ_auditorias,
+                                        output_path=None, logo_path=None):
+    """
+    Gera PDF com TODAS as atividades do período, organizadas semana a semana.
+    Cada semana tem: KPI, resumo por regional, tabela de turbinas e gráfico.
+
+    Args:
+        ativ_turbinas: DataFrame de atividades em turbinas
+        ativ_auditorias: DataFrame de auditorias
+        output_path: caminho do PDF de saída
+        logo_path: caminho do logotipo
+    """
+    if output_path is None:
+        output_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'Relatorio_Completo_Por_Semana.pdf'
+        )
+
+    temp_dir = tempfile.mkdtemp()
+
+    # Lista de semanas presentes nos dados
+    semanas = sorted(set(
+        list(ativ_turbinas['ano_semana'].unique()) if not ativ_turbinas.empty else []
+    ) | set(
+        list(ativ_auditorias['ano_semana'].unique()) if not ativ_auditorias.empty else []
+    ))
+
+    # Gráficos gerais
+    path_barras = None
+    path_evolucao = None
+    if not ativ_turbinas.empty:
+        path_barras = gerar_grafico_barras_semanal(ativ_turbinas, semanas, temp_dir)
+        path_evolucao = gerar_grafico_evolucao(ativ_turbinas, semanas, temp_dir)
+
+    pdf = RelatorioCorporativo(logo_path=logo_path)
+    pdf.alias_nb_pages()
+
+    # ── CAPA ──────────────────────────────────────────────────────────────────
+    pdf.add_page()
+    pdf.ln(20)
+    pdf.set_fill_color(*NAVY)
+    pdf.rect(10, 40, 5, 60, 'F')
+    pdf.set_fill_color(*CYAN)
+    pdf.rect(10, 100, 5, 3, 'F')
+
+    pdf.set_xy(25, 42)
+    pdf.set_font('Helvetica', 'B', 26)
+    pdf.set_text_color(*NAVY)
+    pdf.cell(0, 13, sanitize_latin1('RELATORIO COMPLETO DE ATIVIDADES'), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_x(25)
+    pdf.set_font('Helvetica', '', 15)
+    pdf.set_text_color(*DGRAY)
+    pdf.cell(0, 9, sanitize_latin1('Todas as Semanas — Equipe de Qualidade'), new_x='LMARGIN', new_y='NEXT')
+    pdf.ln(8)
+
+    total_turb = len(ativ_turbinas) if not ativ_turbinas.empty else 0
+    total_ferr = int(ativ_auditorias['ferramentas_auditadas'].sum()) if not ativ_auditorias.empty else 0
+
+    if not ativ_turbinas.empty:
+        d_min = ativ_turbinas['data_inicio_exec'].min().strftime('%d/%m/%Y')
+        d_max = ativ_turbinas['data_inicio_exec'].max().strftime('%d/%m/%Y')
+    else:
+        d_min = d_max = '-'
+
+    for info in [
+        f'Periodo: {d_min} a {d_max}',
+        f'Total de atividades em turbinas: {total_turb}',
+        f'Ferramentas auditadas (MPP6): {total_ferr}',
+        f'Semanas cobertas: {len(semanas)}',
+    ]:
+        pdf.set_x(25)
+        pdf.set_font('Helvetica', '', 11)
+        pdf.set_text_color(*MGRAY)
+        pdf.cell(0, 7, sanitize_latin1(info), new_x='LMARGIN', new_y='NEXT')
+
+    pdf.ln(6)
+    pdf.set_x(25)
+    pdf.set_font('Helvetica', 'I', 8)
+    pdf.cell(0, 5, sanitize_latin1(
+        f'Gerado em {datetime.now().strftime("%d/%m/%Y as %H:%M")}'
+    ), new_x='LMARGIN', new_y='NEXT')
+
+    # ── VISÃO GERAL GRÁFICOS ─────────────────────────────────────────────────
+    if not ativ_turbinas.empty:
+        pdf.add_page()
+        pdf.titulo_secao('1. VISAO GERAL — EVOLUCAO SEMANAL')
+        maq_d = ativ_turbinas['aerogerador'].nunique()
+        parques_d = ativ_turbinas['parque'].nunique()
+        pdf.kpi_row([
+            ('ATIVIDADES', total_turb, NAVY),
+            ('MAQUINAS DISTINTAS', maq_d, CYAN),
+            ('PARQUES', parques_d, (76, 175, 80)),
+            ('SEMANAS', len(semanas), CORAL),
+        ])
+        if path_barras:
+            pdf.adicionar_imagem(path_barras, w_mm=240)
+        if path_evolucao:
+            pdf.add_page()
+            pdf.adicionar_imagem(path_evolucao, w_mm=240)
+
+    # ── DETALHAMENTO SEMANA A SEMANA ─────────────────────────────────────────
+    for idx_sem, semana in enumerate(semanas):
+        pdf.add_page()
+        num_sec = idx_sem + 2
+
+        df_turb_sem = ativ_turbinas[ativ_turbinas['ano_semana'] == semana] if not ativ_turbinas.empty else pd.DataFrame()
+        df_aud_sem = ativ_auditorias[ativ_auditorias['ano_semana'] == semana] if not ativ_auditorias.empty else pd.DataFrame()
+
+        # Período da semana
+        periodo_sem = ''
+        if not df_turb_sem.empty:
+            periodo_sem = df_turb_sem['periodo_semana'].iloc[0]
+        elif not df_aud_sem.empty:
+            periodo_sem = df_aud_sem['periodo_semana'].iloc[0]
+
+        n_turb = len(df_turb_sem)
+        n_ferr = int(df_aud_sem['ferramentas_auditadas'].sum()) if not df_aud_sem.empty else 0
+
+        pdf.titulo_secao(
+            f'{num_sec}. {semana}  ({periodo_sem})'
+        )
+
+        # KPIs da semana
+        maq_sem = df_turb_sem['aerogerador'].nunique() if not df_turb_sem.empty else 0
+        parq_sem = df_turb_sem['parque'].nunique() if not df_turb_sem.empty else 0
+        pdf.kpi_row([
+            ('ATIVIDADES', n_turb, NAVY),
+            ('MAQUINAS', maq_sem, CYAN),
+            ('PARQUES', parq_sem, (76, 175, 80)),
+            ('FERR. AUDITADAS', n_ferr, CORAL),
+        ])
+
+        # Resumo por regional
+        if not df_turb_sem.empty:
+            resumo_reg = df_turb_sem.groupby('grupo_equipe').agg(
+                atividades=('aerogerador', 'count'),
+                maquinas=('aerogerador', 'nunique'),
+                parques=('parque', 'nunique'),
+                os=('qtd_os', 'sum'),
+            ).reset_index()
+            resumo_reg.columns = ['Regional', 'Atividades', 'Maquinas', 'Parques', 'OS']
+            pdf.titulo_secao('Resumo por Regional', nivel=3)
+            pdf.tabela_corporativa(resumo_reg, col_widths=[35, 35, 35, 30, 25])
+            pdf.ln(4)
+
+            # Tabela de turbinas
+            detalhe = df_turb_sem.groupby(['grupo_equipe', 'aerogerador', 'parque']).agg(
+                tipo=('desc_esquema', lambda x: ' | '.join(sorted(x.unique()))),
+                componentes=('componentes', lambda x: ', '.join(
+                    sorted(set(', '.join(x.dropna()).split(', ')))) if not x.dropna().empty else '-'),
+            ).reset_index()
+            detalhe.columns = ['Regional', 'Aerogerador', 'Parque', 'Tipo de Atividade', 'Componentes']
+            detalhe = detalhe.sort_values(['Regional', 'Parque', 'Aerogerador'])
+            pdf.titulo_secao('Turbinas Atendidas', nivel=3)
+            pdf.tabela_corporativa(detalhe, col_widths=[25, 26, 22, 100, 107], font_size=6.5)
+            pdf.ln(4)
+
+            # Gráfico de máquinas
+            path_maq = _gerar_grafico_maquinas_semana(ativ_turbinas, semana, temp_dir)
+            if path_maq:
+                pdf.adicionar_imagem(path_maq, w_mm=210)
+
+        # Auditorias da semana
+        if not df_aud_sem.empty:
+            pdf.set_font('Helvetica', 'B', 9)
+            pdf.set_text_color(230, 81, 0)
+            pdf.cell(0, 5, sanitize_latin1('AUDITORIAS DE FERRAMENTAS (MPP6):'),
+                     new_x='LMARGIN', new_y='NEXT')
+            pdf.ln(1)
+            tab_aud = df_aud_sem[['grupo_equipe', 'ferramentas_auditadas', 'qtd_os']].copy()
+            tab_aud.columns = ['Regional', 'Ferramentas Auditadas', 'Total OS']
+            pdf.tabela_corporativa(tab_aud, col_widths=[40, 50, 30])
+            pdf.ln(3)
+
+    # ── RESUMO ACUMULADO ──────────────────────────────────────────────────────
+    if not ativ_turbinas.empty:
+        pdf.add_page()
+        pdf.titulo_secao(f'{len(semanas) + 2}. RESUMO ACUMULADO')
+
+        total_reg = ativ_turbinas.groupby('grupo_equipe').agg(
+            atividades=('aerogerador', 'count'),
+            maquinas=('aerogerador', 'nunique'),
+            parques=('parque', 'nunique'),
+            os_total=('qtd_os', 'sum')
+        ).reset_index()
+        total_reg.columns = ['Regional', 'Atividades', 'Maquinas', 'Parques', 'OS Total']
+        pdf.titulo_secao('por Regional', nivel=3)
+        pdf.tabela_corporativa(total_reg, col_widths=[35, 35, 40, 30, 30])
+        pdf.ln(5)
+
+        total_tipo = ativ_turbinas.groupby('desc_esquema').agg(
+            atividades=('aerogerador', 'count'),
+            maquinas=('aerogerador', 'nunique'),
+        ).reset_index().sort_values('atividades', ascending=False)
+        total_tipo.columns = ['Tipo de Atividade', 'Atividades', 'Maquinas']
+        pdf.titulo_secao('por Tipo de Atividade', nivel=3)
+        pdf.tabela_corporativa(total_tipo, col_widths=[140, 40, 40])
+
+    pdf.output(output_path)
+    import shutil
+    try:
+        shutil.rmtree(temp_dir)
+    except Exception:
+        pass
+    return output_path
+
+
+# =============================================================================
+# RELATÓRIO SOMENTE DA SEMANA ANTERIOR
+# =============================================================================
+
+def gerar_relatorio_semana_anterior(ativ_turbinas, ativ_auditorias, pcm_atividades=None,
+                                    output_path=None, logo_path=None):
+    """
+    Gera PDF exclusivamente com os dados da SEMANA ANTERIOR (relativa ao dia de hoje).
+
+    Args:
+        ativ_turbinas: DataFrame completo de atividades em turbinas
+        ativ_auditorias: DataFrame completo de auditorias
+        pcm_atividades: lista de dicts com atividades planejadas (opcional)
+        output_path: caminho do PDF de saída
+        logo_path: caminho do logotipo
+    """
+    import datetime as _dt
+
+    if output_path is None:
+        output_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'Relatorio_Semana_Anterior.pdf'
+        )
+
+    temp_dir = tempfile.mkdtemp()
+
+    # Calcular semana anterior
+    hoje = _dt.date.today()
+    target = hoje - _dt.timedelta(weeks=1)
+    inicio_sem = target - _dt.timedelta(days=target.weekday())
+    fim_sem = inicio_sem + _dt.timedelta(days=6)
+    sn = target.isocalendar()[1]
+    ano = target.isocalendar()[0]
+    label_sem = f'{ano}-S{str(sn).zfill(2)}'
+    periodo_sem = f"{inicio_sem.strftime('%d/%m')} a {fim_sem.strftime('%d/%m/%Y')}"
+
+    # Filtrar apenas a semana anterior
+    df_turb = ativ_turbinas[ativ_turbinas['ano_semana'] == label_sem].copy() \
+        if not ativ_turbinas.empty else pd.DataFrame()
+    df_aud = ativ_auditorias[ativ_auditorias['ano_semana'] == label_sem].copy() \
+        if not ativ_auditorias.empty else pd.DataFrame()
+
+    n_turb = len(df_turb)
+    n_ferr = int(df_aud['ferramentas_auditadas'].sum()) if not df_aud.empty else 0
+    maq_d = df_turb['aerogerador'].nunique() if not df_turb.empty else 0
+    parq_d = df_turb['parque'].nunique() if not df_turb.empty else 0
+
+    # Gráfico de máquinas da semana anterior
+    path_maq = _gerar_grafico_maquinas_semana(ativ_turbinas, label_sem, temp_dir)
+
+    # Gráfico de tipo de atividade (pizza)
+    path_pizza = None
+    if not df_turb.empty:
+        tipo_counts = df_turb['desc_esquema'].value_counts()
+        fig, ax = plt.subplots(figsize=(9, 5))
+        colors = [list(CORES_REGIONAL.values())[i % 4] for i in range(len(tipo_counts))]
+        wedges, texts, autotexts = ax.pie(
+            tipo_counts.values, labels=None,
+            autopct='%1.0f%%', startangle=140,
+            colors=colors, pctdistance=0.75,
+            wedgeprops=dict(edgecolor='white', linewidth=1.5)
+        )
+        for at in autotexts:
+            at.set_fontsize(9)
+            at.set_fontweight('bold')
+            at.set_color('white')
+        ax.legend(tipo_counts.index, loc='lower right', fontsize=8, framealpha=0.9)
+        ax.set_title(f'Distribuicao por Tipo — {label_sem}',
+                     fontsize=12, fontweight='bold', color=NAVY_HEX)
+        plt.tight_layout()
+        path_pizza = os.path.join(temp_dir, 'pizza_tipo.png')
+        plt.savefig(path_pizza, dpi=160, bbox_inches='tight', facecolor='white')
+        plt.close()
+
+    # Gráfico de barras por regional
+    path_regional = None
+    if not df_turb.empty:
+        reg_counts = df_turb.groupby('grupo_equipe')['aerogerador'].count().sort_values(ascending=False)
+        fig, ax = plt.subplots(figsize=(8, 3.5))
+        cores = [CORES_REGIONAL.get(r, '#9E9E9E') for r in reg_counts.index]
+        bars = ax.bar(reg_counts.index, reg_counts.values, color=cores,
+                      edgecolor='white', width=0.55)
+        for bar in bars:
+            h = bar.get_height()
+            ax.annotate(f'{int(h)}', xy=(bar.get_x() + bar.get_width() / 2, h),
+                        xytext=(0, 4), textcoords='offset points',
+                        ha='center', fontsize=11, fontweight='bold', color=NAVY_HEX)
+        ax.set_xlabel('Regional', fontweight='bold')
+        ax.set_ylabel('Atividades', fontweight='bold')
+        ax.set_title(f'Atividades por Regional — {label_sem}',
+                     fontsize=12, fontweight='bold', color=NAVY_HEX)
+        import matplotlib.ticker as _mt2
+        ax.yaxis.set_major_locator(_mt2.MaxNLocator(integer=True))
+        plt.tight_layout()
+        path_regional = os.path.join(temp_dir, 'regional_sem_ant.png')
+        plt.savefig(path_regional, dpi=160, bbox_inches='tight', facecolor='white')
+        plt.close()
+
+    # ── MONTAR PDF ────────────────────────────────────────────────────────────
+    pdf = RelatorioCorporativo(logo_path=logo_path)
+    pdf.alias_nb_pages()
+
+    # CAPA
+    pdf.add_page()
+    pdf.ln(20)
+    pdf.set_fill_color(*NAVY)
+    pdf.rect(10, 40, 5, 60, 'F')
+    pdf.set_fill_color(*CYAN)
+    pdf.rect(10, 100, 5, 3, 'F')
+
+    pdf.set_xy(25, 42)
+    pdf.set_font('Helvetica', 'B', 24)
+    pdf.set_text_color(*NAVY)
+    pdf.cell(0, 12, sanitize_latin1('RELATORIO SEMANA ANTERIOR'), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_x(25)
+    pdf.set_font('Helvetica', '', 14)
+    pdf.set_text_color(*DGRAY)
+    pdf.cell(0, 9, sanitize_latin1(f'Semana {sn} — {periodo_sem}'),
+             new_x='LMARGIN', new_y='NEXT')
+    pdf.ln(8)
+
+    for info in [
+        f'Identificador da semana: {label_sem}',
+        f'Atividades em turbinas: {n_turb}',
+        f'Maquinas distintas: {maq_d}',
+        f'Parques atendidos: {parq_d}',
+        f'Ferramentas auditadas (MPP6): {n_ferr}',
+    ]:
+        pdf.set_x(25)
+        pdf.set_font('Helvetica', '', 11)
+        pdf.set_text_color(*MGRAY)
+        pdf.cell(0, 7, sanitize_latin1(info), new_x='LMARGIN', new_y='NEXT')
+
+    pdf.ln(6)
+    pdf.set_x(25)
+    pdf.set_font('Helvetica', 'I', 8)
+    pdf.cell(0, 5, sanitize_latin1(
+        f'Gerado em {datetime.now().strftime("%d/%m/%Y as %H:%M")}'
+    ), new_x='LMARGIN', new_y='NEXT')
+
+    # SEÇÃO 1: KPIs + Gráficos
+    pdf.add_page()
+    pdf.titulo_secao(f'1. RESUMO DA SEMANA — {label_sem} ({periodo_sem})')
+
+    pdf.kpi_row([
+        ('ATIVIDADES', n_turb, NAVY),
+        ('MAQUINAS', maq_d, CYAN),
+        ('PARQUES', parq_d, (76, 175, 80)),
+        ('FERR. AUDITADAS', n_ferr, CORAL),
+    ])
+
+    # Dois gráficos lado a lado
+    if path_regional and path_pizza:
+        y_img = pdf.get_y()
+        x_left = pdf.l_margin
+        w_half = (pdf.w - 20 - 8) / 2
+        if pdf.get_y() + 70 > pdf.h - 22:
+            pdf.add_page()
+            y_img = pdf.get_y()
+        pdf.image(path_regional, x=x_left, y=y_img, w=w_half)
+        pdf.image(path_pizza, x=x_left + w_half + 8, y=y_img, w=w_half)
+        pdf.set_y(y_img + 75)
+        pdf.ln(4)
+    elif path_regional:
+        pdf.adicionar_imagem(path_regional, w_mm=200)
+
+    # SEÇÃO 2: Resumo por regional
+    if not df_turb.empty:
+        pdf.titulo_secao('2. ATIVIDADES POR REGIONAL')
+        resumo_reg = df_turb.groupby('grupo_equipe').agg(
+            atividades=('aerogerador', 'count'),
+            maquinas=('aerogerador', 'nunique'),
+            parques=('parque', 'nunique'),
+            os_total=('qtd_os', 'sum'),
+        ).reset_index()
+        resumo_reg.columns = ['Regional', 'Atividades', 'Maquinas', 'Parques', 'OS Total']
+        resumo_reg = resumo_reg.sort_values('Atividades', ascending=False)
+        pdf.tabela_corporativa(resumo_reg, col_widths=[35, 35, 35, 30, 30])
+        pdf.ln(5)
+
+    # SEÇÃO 3: Tabela detalhada de turbinas
+    if not df_turb.empty:
+        pdf.titulo_secao('3. TURBINAS ATENDIDAS — DETALHE COMPLETO')
+        detalhe = df_turb.groupby(['grupo_equipe', 'aerogerador', 'parque']).agg(
+            tipo=('desc_esquema', lambda x: ' | '.join(sorted(x.unique()))),
+            componentes=('componentes', lambda x: ', '.join(
+                sorted(set(', '.join(x.dropna()).split(', ')))) if not x.dropna().empty else '-'),
+            os=('qtd_os', 'sum'),
+        ).reset_index()
+        detalhe.columns = ['Regional', 'Aerogerador', 'Parque', 'Tipo de Atividade', 'Componentes', 'OS']
+        detalhe = detalhe.sort_values(['Regional', 'Parque', 'Aerogerador'])
+        pdf.tabela_corporativa(detalhe, col_widths=[25, 26, 22, 95, 100, 12], font_size=6.5)
+        pdf.ln(5)
+
+    # Gráfico máquinas
+    if path_maq:
+        pdf.add_page()
+        pdf.titulo_secao('4. DISTRIBUICAO DE MAQUINAS')
+        pdf.adicionar_imagem(path_maq, w_mm=240)
+
+    # SEÇÃO 5: Auditorias de ferramentas
+    if not df_aud.empty:
+        pdf.add_page()
+        pdf.titulo_secao('5. AUDITORIAS DE FERRAMENTAS (MPP6)')
+        pdf.set_font('Helvetica', '', 9)
+        pdf.set_text_color(*MGRAY)
+        pdf.cell(0, 5, sanitize_latin1(
+            'Registros de auditoria de ferramentas MPP6 realizados na semana.'
+        ), new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(3)
+        tab_aud = df_aud[['grupo_equipe', 'ferramentas_auditadas', 'qtd_os']].copy()
+        tab_aud.columns = ['Regional', 'Ferramentas Auditadas', 'Total OS']
+        pdf.tabela_corporativa(tab_aud, col_widths=[40, 55, 35])
+        pdf.ln(5)
+
+    # SEÇÃO 6: PCM planejado (próxima semana)
+    if pcm_atividades:
+        pdf.add_page()
+        prox_target = hoje + _dt.timedelta(weeks=1)
+        prox_ini = prox_target - _dt.timedelta(days=prox_target.weekday())
+        prox_fim = prox_ini + _dt.timedelta(days=6)
+        prox_sn = prox_target.isocalendar()[1]
+        prox_periodo = f"{prox_ini.strftime('%d/%m')} a {prox_fim.strftime('%d/%m/%Y')}"
+
+        pdf.titulo_secao(f'6. PLANEJAMENTO PCM — PROXIMA SEMANA S{prox_sn} ({prox_periodo})')
+        pdf.set_font('Helvetica', '', 9)
+        pdf.set_text_color(*DGRAY)
+        pdf.cell(0, 5, sanitize_latin1(
+            'Atividades planejadas pela equipe de PCM para a proxima semana.'
+        ), new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(3)
+
+        regs_p = set(a.get('regional', '') for a in pcm_atividades)
+        pdf.kpi_row([
+            ('ATIVIDADES PLANEJADAS', len(pcm_atividades), CYAN),
+            ('REGIONAIS', len(regs_p), NAVY),
+        ])
+
+        df_pcm = pd.DataFrame(pcm_atividades)
+        cols_ex = ['regional', 'parque', 'aerogerador', 'tipo_atividade',
+                   'data_prevista', 'responsavel', 'observacoes']
+        cols_ok = [c for c in cols_ex if c in df_pcm.columns]
+        df_show = df_pcm[cols_ok].copy()
+        df_show.columns = [c.replace('_', ' ').title() for c in cols_ok]
+        widths = {'Regional': 22, 'Parque': 20, 'Aerogerador': 25,
+                  'Tipo Atividade': 75, 'Data Prevista': 25,
+                  'Responsavel': 30, 'Observacoes': 80}
+        cw = [widths.get(c, 30) for c in df_show.columns]
+        pdf.tabela_corporativa(df_show, col_widths=cw)
+
+    pdf.output(output_path)
+    import shutil
+    try:
+        shutil.rmtree(temp_dir)
+    except Exception:
+        pass
+    return output_path
