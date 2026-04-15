@@ -957,12 +957,28 @@ with tab3:
                                 ).reset_index()
                                 resumo.to_excel(writer, sheet_name='Resumo Semanal', index=False)
 
-                                detalhe = ativ_t[['grupo_equipe', 'aerogerador', 'parque',
-                                                  'desc_esquema', 'data_inicio_exec',
-                                                  'ano_semana']].copy()
-                                detalhe.columns = ['Regional', 'Aerogerador', 'Parque',
-                                                   'Tipo', 'Data', 'Semana']
-                                detalhe.to_excel(writer, sheet_name='Atividades', index=False)
+                                detalhe_base = ativ_t[['grupo_equipe', 'aerogerador', 'parque',
+                                                  'desc_esquema', 'componentes',
+                                                  'data_inicio_exec', 'ano_semana']].copy()
+                                detalhe_base.columns = ['Regional', 'Aerogerador', 'Parque',
+                                                   'Tipo', 'Componentes', 'Data', 'Semana']
+
+                                # Expandir componentes: uma linha por componente
+                                rows_exp = []
+                                for _, row in detalhe_base.iterrows():
+                                    comps = [c.strip() for c in str(row['Componentes']).split(',') if c.strip()]
+                                    if not comps:
+                                        comps = ['-']
+                                    for comp in comps:
+                                        r = row.copy()
+                                        r['Componente'] = comp
+                                        rows_exp.append(r)
+                                detalhe_exp = pd.DataFrame(rows_exp)
+                                detalhe_exp = detalhe_exp.drop(columns=['Componentes'])
+                                cols_order = ['Semana', 'Data', 'Regional', 'Parque',
+                                              'Aerogerador', 'Tipo', 'Componente']
+                                detalhe_exp = detalhe_exp[[c for c in cols_order if c in detalhe_exp.columns]]
+                                detalhe_exp.to_excel(writer, sheet_name='Atividades', index=False)
 
                             if pcm_data:
                                 df_pcm_ex = pd.DataFrame(pcm_data)

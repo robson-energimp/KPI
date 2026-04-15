@@ -617,14 +617,16 @@ def gerar_relatorio_pdf(ativ_turbinas, ativ_auditorias, pcm_atividades,
         pdf.tabela_corporativa(resumo_reg, col_widths=[35, 35, 40, 35])
         pdf.ln(4)
 
-        # Detalhe por turbina
+        # Detalhe por turbina — mesmo formato do relatorio completo
         detalhe = df_semana.groupby(['grupo_equipe', 'aerogerador', 'parque']).agg(
             tipo=('desc_esquema', lambda x: ' | '.join(sorted(x.unique()))),
-            qtd=('desc_esquema', 'count'),
+            componentes=('componentes', lambda x: ', '.join(
+                sorted(set(', '.join(x.dropna()).split(', ')))) if not x.dropna().empty else '-'),
         ).reset_index()
-        detalhe.columns = ['Regional', 'Aerogerador', 'Parque', 'Tipo', 'Qtd']
+        detalhe.columns = ['Regional', 'Aerogerador', 'Parque', 'Tipo de Atividade', 'Componentes']
+        detalhe = detalhe.sort_values(['Regional', 'Parque', 'Aerogerador'])
         pdf.titulo_secao('Turbinas Atendidas', nivel=3)
-        pdf.tabela_corporativa(detalhe, col_widths=[25, 28, 22, 130, 20])
+        pdf.tabela_corporativa(detalhe, col_widths=[25, 26, 22, 100, 107], font_size=6.5)
         pdf.ln(3)
 
     # ===== Calcular semanas: anterior, atual, próxima =====
