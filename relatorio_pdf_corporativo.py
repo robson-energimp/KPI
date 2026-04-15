@@ -380,7 +380,7 @@ class RelatorioCorporativo(FPDF):
 # =============================================================================
 
 def gerar_relatorio_pdf(ativ_turbinas, ativ_auditorias, pcm_atividades,
-                         output_path=None, logo_path=None):
+                         output_path=None, logo_path=None, ativ_avaliacoes=None):
     """
     Gera o relatório PDF corporativo completo.
 
@@ -390,7 +390,19 @@ def gerar_relatorio_pdf(ativ_turbinas, ativ_auditorias, pcm_atividades,
         pcm_atividades: lista de dicts com atividades planejadas (PCM)
         output_path: caminho do PDF de saída
         logo_path: caminho do logotipo
+        ativ_avaliacoes: DataFrame de avaliações de equipe (opcional)
     """
+    # Import cobertura
+    try:
+        from backend import calcular_cobertura_parques, calcular_cobertura_regional, PARQUES_INFO
+        df_cob_reg = calcular_cobertura_regional(ativ_turbinas)
+        df_cob_pq  = calcular_cobertura_parques(ativ_turbinas)
+        total_maq_universo = sum(v['qtd_maq'] for v in PARQUES_INFO.values())
+    except Exception:
+        df_cob_reg = None
+        df_cob_pq  = None
+        total_maq_universo = 0
+
     if output_path is None:
         output_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
@@ -453,6 +465,10 @@ def gerar_relatorio_pdf(ativ_turbinas, ativ_auditorias, pcm_atividades,
     total_turb = len(ativ_turbinas) if not ativ_turbinas.empty else 0
     total_ferr = int(ativ_auditorias['ferramentas_auditadas'].sum()) if not ativ_auditorias.empty else 0
     total_pcm = len(pcm_atividades) if pcm_atividades else 0
+    total_aval = (int(ativ_avaliacoes['qtd_avaliacoes'].sum())
+                  if ativ_avaliacoes is not None and not ativ_avaliacoes.empty else 0)
+    maq_distintas = ativ_turbinas['aerogerador'].nunique() if not ativ_turbinas.empty else 0
+    cobertura_geral = round(maq_distintas / total_maq_universo * 100, 1) if total_maq_universo else 0
 
     if not ativ_turbinas.empty:
         all_dates = list(ativ_turbinas['data_inicio_exec'])
@@ -463,14 +479,32 @@ def gerar_relatorio_pdf(ativ_turbinas, ativ_auditorias, pcm_atividades,
 
     infos = [
         f'Periodo: {data_min} a {data_max}',
-        f'Atividades em Turbinas: {total_turb}',
-        f'Ferramentas Auditadas: {total_ferr}',
+        f'Atividades em Turbinas: {total_turb}  (1 atividade = turbina + tipo + data)',
+        f'Maquinas distintas atendidas: {maq_distintas} / {total_maq_universo} ({cobertura_geral}%)',
+        f'Ferramentas Auditadas (MPP6): {total_ferr}',
+        f'Avaliacoes de Equipe: {total_aval}',
         f'Semanas: {len(semanas)}',
         f'Atividades Planejadas (PCM): {total_pcm}',
     ]
     for info in infos:
         pdf.set_x(25)
         pdf.cell(0, 7, sanitize_latin1(info), new_x='LMARGIN', new_y='NEXT')
+
+    # Nota definitoria
+    pdf.ln(4)
+    pdf.set_x(25)
+    pdf.set_font('Helvetica', 'I', 7.5)
+    pdf.set_text_color(*MGRAY)
+    pdf.multi_cell(
+        pdf.w - 50, 4.5,
+        sanitize_latin1(
+            'NOTA: Uma Atividade em Turbina = combinacao de Regional + Data + Aerogerador + '
+            'Tipo de Servico. Uma mesma turbina pode gerar multiplas atividades se '
+            'recebeu tipos distintos. Auditorias MPP6 e Avaliacoes NAO integram a '
+            'contagem de Atividades em Turbinas.'
+        ),
+        align='L'
+    )
 
     pdf.ln(8)
     pdf.set_x(25)
@@ -479,11 +513,10 @@ def gerar_relatorio_pdf(ativ_turbinas, ativ_auditorias, pcm_atividades,
         f'Gerado automaticamente em {datetime.now().strftime("%d/%m/%Y as %H:%M")}'
     ), new_x='LMARGIN', new_y='NEXT')
 
-    # ===== VISÃO GERAL COM KPIs =====
+    # ===== VISAO GERAL COM KPIs =====
     pdf.add_page()
     pdf.titulo_secao('1. VISAO GERAL')
 
-    maq_distintas = ativ_turbinas['aerogerador'].nunique() if not ativ_turbinas.empty else 0
     parques = ativ_turbinas['parque'].nunique() if not ativ_turbinas.empty else 0
 
     pdf.kpi_row([
@@ -493,11 +526,41 @@ def gerar_relatorio_pdf(ativ_turbinas, ativ_auditorias, pcm_atividades,
         ('SEMANAS', len(semanas), CORAL),
     ])
 
-    # Gráfico waterfall
+    # KPI de cobertura por regional + avaliacoes
+    if df_cob_reg is not None and not df_cob_reg.empty:
+        cob_kpis = []
+        for _, row in df_cob_reg.iterrows():
+            cor = (76, 175, 80) if row['Cobertura_%'] >= 80 else \
+                  (255, 152, 0) if row['Cobertura_%'] >= 50 else CORAL
+            cob_kpis.append((
+                f'COBERTURA {row["Regional"]}',
+                f'{row["Cobertura_%"]}%',
+                cor
+            ))
+        cob_kpis.append(('AVALIACOES DE EQUIPE', total_aval, MGRAY))
+        pdf.kpi_row(cob_kpis)
+    elif total_aval > 0:
+        pdf.kpi_row([('AVALIACOES DE EQUIPE', total_aval, MGRAY)])
+
+    # Nota definitoria
+    pdf.set_font('Helvetica', 'I', 7)
+    pdf.set_text_color(*MGRAY)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(
+        pdf.w - 20, 4,
+        sanitize_latin1(
+            'Atividade em Turbina = Regional + Data + Aerogerador + Tipo de Servico. '
+            'Auditorias MPP6 e Avaliacoes de Equipe sao contabilizadas separadamente.'
+        ),
+        align='L'
+    )
+    pdf.ln(3)
+
+    # Grafico waterfall (decomposicao por tipo)
     if path_waterfall:
         pdf.adicionar_imagem(path_waterfall, w_mm=240)
 
-    # ===== EVOLUÇÃO SEMANAL =====
+    # ===== EVOLUCAO SEMANAL =====
     if not ativ_turbinas.empty:
         pdf.add_page()
         pdf.titulo_secao('2. EVOLUCAO SEMANAL')
@@ -508,9 +571,16 @@ def gerar_relatorio_pdf(ativ_turbinas, ativ_auditorias, pcm_atividades,
             parques=('parque', 'nunique'),
             os_total=('qtd_os', 'sum')
         ).reset_index().sort_values('ano_semana')
-        resumo.columns = ['Semana', 'Periodo', 'Atividades', 'Maquinas', 'Parques', 'OS']
+        resumo.columns = ['Semana', 'Periodo', 'Atividades', 'Maquinas', 'Parques', 'Registros EQM']
 
-        pdf.tabela_corporativa(resumo, col_widths=[25, 48, 28, 28, 25, 25])
+        pdf.set_font('Helvetica', 'I', 7)
+        pdf.set_text_color(*MGRAY)
+        pdf.cell(0, 4, sanitize_latin1(
+            'Atividades = combinacoes turbina+tipo. Registros EQM = total bruto de OS no banco.'
+        ), new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(2)
+        pdf.set_text_color(*DGRAY)
+        pdf.tabela_corporativa(resumo, col_widths=[25, 48, 28, 28, 25, 35])
         pdf.ln(5)
         pdf.adicionar_imagem(path_barras, w_mm=240)
 
@@ -547,14 +617,16 @@ def gerar_relatorio_pdf(ativ_turbinas, ativ_auditorias, pcm_atividades,
         pdf.tabela_corporativa(resumo_reg, col_widths=[35, 35, 40, 35])
         pdf.ln(4)
 
-        # Detalhe por turbina
+        # Detalhe por turbina — mesmo formato do relatorio completo
         detalhe = df_semana.groupby(['grupo_equipe', 'aerogerador', 'parque']).agg(
             tipo=('desc_esquema', lambda x: ' | '.join(sorted(x.unique()))),
-            qtd=('desc_esquema', 'count'),
+            componentes=('componentes', lambda x: ', '.join(
+                sorted(set(', '.join(x.dropna()).split(', ')))) if not x.dropna().empty else '-'),
         ).reset_index()
-        detalhe.columns = ['Regional', 'Aerogerador', 'Parque', 'Tipo', 'Qtd']
+        detalhe.columns = ['Regional', 'Aerogerador', 'Parque', 'Tipo de Atividade', 'Componentes']
+        detalhe = detalhe.sort_values(['Regional', 'Parque', 'Aerogerador'])
         pdf.titulo_secao('Turbinas Atendidas', nivel=3)
-        pdf.tabela_corporativa(detalhe, col_widths=[25, 28, 22, 130, 20])
+        pdf.tabela_corporativa(detalhe, col_widths=[25, 26, 22, 100, 107], font_size=6.5)
         pdf.ln(3)
 
     # ===== Calcular semanas: anterior, atual, próxima =====
