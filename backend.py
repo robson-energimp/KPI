@@ -186,7 +186,16 @@ def processar_dados_qualidade(df_raw):
 
 
 def processar_atividades(df):
-    """Processa dados em atividades semanais (turbinas e auditorias)."""
+    """
+    Processa dados em atividades semanais.
+    Retorna (ativ_turbinas, ativ_auditorias, ativ_avaliacoes).
+
+    Definição de Atividade em Turbina:
+        Combinação única de Regional + Data + Aerogerador + Tipo de Atividade.
+        Uma mesma turbina pode gerar múltiplas atividades se houver tipos distintos
+        no mesmo dia. Múltiplas OS do mesmo tipo são colapsadas em 1 atividade
+        (coluna qtd_os acumula a contagem bruta de OS).
+    """
     df = df.copy()
     df['data_inicio_exec'] = pd.to_datetime(df['data_inicio_exec'])
     if 'data_fim_exec' in df.columns:
@@ -209,6 +218,7 @@ def processar_atividades(df):
 
     df_turbinas = df[~df['eh_auditoria'] & ~df['eh_avaliacao']].copy()
     df_auditorias = df[df['eh_auditoria']].copy()
+    df_avaliacoes = df[df['eh_avaliacao']].copy()
 
     # Agrupar atividades em turbinas
     if not df_turbinas.empty:
@@ -234,7 +244,119 @@ def processar_atividades(df):
     else:
         ativ_auditorias = pd.DataFrame()
 
-    return ativ_turbinas, ativ_auditorias
+    # Agrupar avaliações de equipe (antes invisíveis)
+    if not df_avaliacoes.empty:
+        ativ_avaliacoes = df_avaliacoes.groupby(
+            ['grupo_equipe', 'ano_semana', 'semana_num', 'periodo_semana']
+        ).agg(
+            qtd_avaliacoes=('quantidade', 'sum'),
+            desc_esquema=('desc_esquema', 'first')
+        ).reset_index()
+    else:
+        ativ_avaliacoes = pd.DataFrame()
+
+    return ativ_turbinas, ativ_auditorias, ativ_avaliacoes
+
+
+# =============================================================================
+# COBERTURA DE PARQUES
+# =============================================================================
+def calcular_cobertura_parques(ativ_turbinas):
+    """
+    Calcula % de cobertura de máquinas por parque.
+    Retorna DataFrame com [Parque, Regional, Maq_Total, Maq_Atendidas, Cobertura_%].
+    """
+    if ativ_turbinas is None or ativ_turbinas.empty:
+        return pd.DataFrame()
+
+    atendidas = ativ_turbinas.groupby('parque')['aerogerador'].nunique().reset_index()
+    atendidas.columns = ['Parque', 'Maq_Atendidas']
+
+    rows = []
+    for parque, info in PARQUES_INFO.items():
+        total = info['qtd_maq']
+        regional = info['regional']
+        atend_row = atendidas[atendidas['Parque'] == parque]
+        atend = int(atend_row['Maq_Atendidas'].iloc[0]) if not atend_row.empty else 0
+        cobertura = round(atend / total * 100, 1) if total > 0 else 0.0
+        rows.append({
+            'Parque': parque,
+            'Regional': regional,
+            'Maq_Total': total,
+            'Maq_Atendidas': atend,
+            'Cobertura_%': cobertura,
+        })
+
+    df_cob = pd.DataFrame(rows).sort_values(['Regional', 'Parque'])
+    return df_cob
+
+
+def calcular_cobertura_regional(ativ_turbinas):
+    """
+    Calcula % de cobertura de máquinas por regional.
+    Retorna DataFrame com [Regional, Maq_Total, Maq_Atendidas, Cobertura_%].
+    """
+    df_parques = calcular_cobertura_parques(ativ_turbinas)
+    if df_parques.empty:
+        return pd.DataFrame()
+
+    df_reg = df_parques.groupby('Regional').agg(
+        Maq_Total=('Maq_Total', 'sum'),
+        Maq_Atendidas=('Maq_Atendidas', 'sum'),
+    ).reset_index()
+    df_reg['Cobertura_%'] = (df_reg['Maq_Atendidas'] / df_reg['Maq_Total'] * 100).round(1)
+    return df_reg.sort_values('Regional')
+
+
+# =============================================================================
+# COMPARAÇÃO PCM × EXECUTADO
+# =============================================================================
+def comparar_pcm_executado(pcm_atividades, ativ_turbinas):
+    """
+    Cruza atividades PCM planejadas com as executadas no EQM.
+    Critério de match: mesmo parque + mesma semana + tipo de atividade similar.
+    Retorna DataFrame com status de cada atividade planejada.
+    """
+    if not pcm_atividades or ativ_turbinas is None or ativ_turbinas.empty:
+        return pd.DataFrame()
+
+    resultados = []
+    for item in pcm_atividades:
+        parque = str(item.get('parque', '')).upper()
+        tipo_pcm = str(item.get('tipo_atividade', '')).upper()
+        data_prev = str(item.get('data_prevista', ''))
+
+        # Determina semana da data prevista
+        try:
+            dt = pd.to_datetime(data_prev)
+            sn = dt.isocalendar()[1]
+            ano = dt.isocalendar()[0]
+            label_sem = f'{ano}-S{str(sn).zfill(2)}'
+        except Exception:
+            label_sem = None
+
+        executado = False
+        if label_sem:
+            mask = (
+                (ativ_turbinas['parque'] == parque) &
+                (ativ_turbinas['ano_semana'] == label_sem) &
+                (ativ_turbinas['desc_esquema'].str.upper().str.contains(
+                    tipo_pcm[:15], na=False
+                ))
+            )
+            executado = bool(mask.any())
+
+        resultados.append({
+            'Regional': item.get('regional', '-'),
+            'Parque': item.get('parque', '-'),
+            'Aerogerador': item.get('aerogerador', '-'),
+            'Tipo Planejado': item.get('tipo_atividade', '-'),
+            'Data Prevista': data_prev,
+            'Responsável': item.get('responsavel', '-'),
+            'Executado?': '✅ Sim' if executado else '❌ Não',
+        })
+
+    return pd.DataFrame(resultados)
 
 
 # =============================================================================
@@ -344,10 +466,12 @@ def pipeline_completo(data_inicio=None, data_fim=None):
         salvar_dados_excel(df_quality)
 
         # 4. Processar atividades
-        ativ_turbinas, ativ_auditorias = processar_atividades(df_quality)
+        ativ_turbinas, ativ_auditorias, ativ_avaliacoes = processar_atividades(df_quality)
 
+        n_aval = int(ativ_avaliacoes['qtd_avaliacoes'].sum()) if not ativ_avaliacoes.empty else 0
         msg = (f"✅ {len(df_quality)} registros processados. "
-               f"Turbinas: {len(ativ_turbinas)}, Auditorias: {len(ativ_auditorias)}")
+               f"Turbinas: {len(ativ_turbinas)}, Auditorias: {len(ativ_auditorias)}, "
+               f"Avaliações: {n_aval}")
 
         return df_quality, ativ_turbinas, ativ_auditorias, msg
 

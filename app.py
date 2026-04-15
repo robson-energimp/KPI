@@ -27,7 +27,9 @@ from backend import (
     adicionar_atividade_pcm, remover_atividade_pcm, limpar_pcm,
     obter_semana_atual, obter_tipos_atividade,
     PARQUES_POR_REGIONAL, TODOS_PARQUES, CORES_REGIONAL,
-    HAS_PSYCOPG2
+    PARQUES_INFO, HAS_PSYCOPG2,
+    calcular_cobertura_parques, calcular_cobertura_regional,
+    comparar_pcm_executado,
 )
 from relatorio_pdf_corporativo import (
     gerar_relatorio_pdf,
@@ -324,7 +326,7 @@ def render_detalhe_semana(ativ_t, label_semana, titulo, periodo, css_class="curr
 def filtrar_dados_por_periodo(df_completo, dt_ini, dt_fim):
     """Filtra os dados pelo período selecionado e reprocessa."""
     if df_completo is None or df_completo.empty:
-        return None, pd.DataFrame(), pd.DataFrame()
+        return None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     df = df_completo.copy()
     df['data_inicio_exec'] = pd.to_datetime(df['data_inicio_exec'])
@@ -332,10 +334,10 @@ def filtrar_dados_por_periodo(df_completo, dt_ini, dt_fim):
     df_filtrado = df[mask]
 
     if df_filtrado.empty:
-        return df_filtrado, pd.DataFrame(), pd.DataFrame()
+        return df_filtrado, pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    ativ_t, ativ_a = processar_atividades(df_filtrado)
-    return df_filtrado, ativ_t, ativ_a
+    ativ_t, ativ_a, ativ_av = processar_atividades(df_filtrado)
+    return df_filtrado, ativ_t, ativ_a, ativ_av
 
 
 # =============================================================================
@@ -453,7 +455,7 @@ if not st.session_state.dados_carregados:
 # =============================================================================
 # FILTRAR DADOS PELO PERÍODO SELECIONADO (reativo às datas)
 # =============================================================================
-df_filtrado, ativ_t, ativ_a = filtrar_dados_por_periodo(
+df_filtrado, ativ_t, ativ_a, ativ_av = filtrar_dados_por_periodo(
     st.session_state.df_dados_completo, data_inicio, data_fim
 )
 
@@ -493,18 +495,54 @@ with tab1:
         total_maq = ativ_t['aerogerador'].nunique()
         total_parques = ativ_t['parque'].nunique()
         total_ferr = int(ativ_a['ferramentas_auditadas'].sum()) if ativ_a is not None and not ativ_a.empty else 0
+        total_aval = int(ativ_av['qtd_avaliacoes'].sum()) if ativ_av is not None and not ativ_av.empty else 0
         semanas = sorted(ativ_t['ano_semana'].unique())
 
-        # KPIs
+        # Cobertura global do período
+        df_cob_reg = calcular_cobertura_regional(ativ_t)
+        total_maq_universo = sum(v['qtd_maq'] for v in PARQUES_INFO.values())
+        cobertura_geral = round(total_maq / total_maq_universo * 100, 1) if total_maq_universo else 0
+
+        # ── Nota explicativa de Atividade ────────────────────────────────────
+        st.markdown("""
+        <div style="background:#f0f4ff;border-left:4px solid #0D1B3E;border-radius:10px;
+                    padding:10px 16px;margin-bottom:16px;font-size:0.83rem;color:#3d4f6e;">
+            <strong>📌 Definição de Atividade em Turbina:</strong>
+            Combinação única de <em>Regional + Data + Aerogerador + Tipo de Serviço</em>.
+            Uma mesma turbina pode gerar múltiplas atividades se recebeu tipos distintos de serviço.
+            A coluna <em>OS Total</em> mostra a contagem bruta de Ordens de Serviço no EQM.
+        </div>
+        """, unsafe_allow_html=True)
+
+        # KPIs — Linha 1
         render_kpi_cards([
-            ("Atividades em Turbinas", total_ativ, "", f"{len(semanas)} semanas"),
-            ("Máquinas Distintas", total_maq, "cyan", f"{total_parques} parques"),
+            ("Atividades em Turbinas", total_ativ, "",
+             f"{len(semanas)} sem. | 1 ativ = turbina+tipo+data"),
+            ("Máquinas Distintas", total_maq, "cyan",
+             f"{total_parques} parques | {cobertura_geral}% do universo"),
             ("Ferramentas Auditadas", total_ferr, "green", "Auditorias MPP6"),
-            ("Semana Atual", f"S{sem_corrente['semana_num']}", "coral", sem_corrente['periodo']),
+            ("Avaliações de Equipe", total_aval, "coral",
+             f"S{sem_corrente['semana_num']} | {sem_corrente['periodo']}"),
         ])
 
+        # KPIs — Linha 2: Cobertura por Regional
+        if not df_cob_reg.empty:
+            st.markdown('<div class="section-title">🎯 Cobertura de Máquinas por Regional</div>',
+                        unsafe_allow_html=True)
+            kpis_cobertura = []
+            for _, row in df_cob_reg.iterrows():
+                kpis_cobertura.append((
+                    f"Cobertura {row['Regional']}",
+                    f"{row['Cobertura_%']}%",
+                    "cyan" if row['Cobertura_%'] >= 80 else
+                    "" if row['Cobertura_%'] >= 50 else "coral",
+                    f"{row['Maq_Atendidas']} / {row['Maq_Total']} turbinas"
+                ))
+            render_kpi_cards(kpis_cobertura)
+
         # Gráficos
-        st.markdown('<div class="section-title">📈 Evolução Semanal</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">📈 Evolução Semanal <span style="font-size:0.72rem;color:#7b8794;font-weight:400">(barras = nº de atividades por turbina+tipo; linha = média do período)</span></div>',
+                    unsafe_allow_html=True)
 
         col_g1, col_g2 = st.columns(2)
 
@@ -513,6 +551,8 @@ with tab1:
                 index='ano_semana', columns='grupo_equipe',
                 values='aerogerador', aggfunc='count', fill_value=0
             ).reindex(semanas, fill_value=0)
+
+            media_geral = pivot.sum(axis=1).mean()
 
             fig, ax = plt.subplots(figsize=(8, 4))
             cores = [CORES_REGIONAL.get(c, '#9E9E9E') for c in pivot.columns]
@@ -523,7 +563,10 @@ with tab1:
                 ax.annotate(f'{int(total)}', xy=(i, total), xytext=(0, 3),
                             textcoords="offset points", ha='center',
                             fontsize=8, fontweight='bold', color='#0D1B3E')
-            ax.set_title('Atividades por Semana', fontweight='bold', color='#0D1B3E')
+            # Linha de média
+            ax.axhline(media_geral, color='#FF6B6B', linewidth=1.4,
+                       linestyle='--', label=f'Média ({media_geral:.0f})', zorder=5)
+            ax.set_title('Atividades por Semana\n(turbina+tipo)', fontweight='bold', color='#0D1B3E', fontsize=10)
             ax.set_xlabel('')
             ax.set_ylabel('Atividades')
             labels = [s.replace('-S', '\nS') for s in pivot.index]
@@ -536,27 +579,77 @@ with tab1:
             plt.close()
 
         with col_g2:
+            # Máquinas distintas por semana (nunique) — complementa o gráfico de atividades
+            pivot_maq = ativ_t.pivot_table(
+                index='ano_semana', columns='grupo_equipe',
+                values='aerogerador', aggfunc='nunique', fill_value=0
+            ).reindex(semanas, fill_value=0)
+            media_maq = pivot_maq.sum(axis=1).mean()
+
             fig2, ax2 = plt.subplots(figsize=(8, 4))
-            for regional in pivot.columns:
+            for regional in pivot_maq.columns:
                 cor = CORES_REGIONAL.get(regional, '#9E9E9E')
-                ax2.plot(pivot.index, pivot[regional], marker='o', linewidth=2,
+                ax2.plot(pivot_maq.index, pivot_maq[regional], marker='o', linewidth=2,
                         markersize=5, label=regional, color=cor)
-                for x, y in zip(pivot.index, pivot[regional]):
+                for x, y in zip(pivot_maq.index, pivot_maq[regional]):
                     if y > 0:
                         ax2.annotate(str(int(y)), (x, y), textcoords="offset points",
                                     xytext=(0, 7), ha='center', fontsize=7,
                                     fontweight='bold', color=cor)
-            ax2.set_title('Evolução por Regional', fontweight='bold', color='#0D1B3E')
+            ax2.axhline(media_maq, color='#FF6B6B', linewidth=1.4,
+                        linestyle='--', label=f'Média ({media_maq:.0f})', zorder=5)
+            ax2.set_title('Turbinas Distintas por Semana\n(máquinas únicas atendidas)', fontweight='bold', color='#0D1B3E', fontsize=10)
             ax2.set_xlabel('')
-            ax2.set_ylabel('Atividades')
-            ax2.legend(fontsize=8)
-            labels2 = [s.replace('-S', '\nS') for s in pivot.index]
+            ax2.set_ylabel('Turbinas Distintas')
+            ax2.legend(fontsize=7)
+            labels2 = [s.replace('-S', '\nS') for s in pivot_maq.index]
             ax2.set_xticks(range(len(labels2)))
             ax2.set_xticklabels(labels2, rotation=0, fontsize=7)
             ax2.yaxis.set_major_locator(mticker.MaxNLocator(integer=True))
             plt.tight_layout()
             st.pyplot(fig2)
             plt.close()
+
+        # ── Cobertura por Parque ────────────────────────────────────────────
+        st.markdown('<div class="section-title">📊 Cobertura Detalhada por Parque</div>',
+                    unsafe_allow_html=True)
+        df_cob_pq = calcular_cobertura_parques(ativ_t)
+        if not df_cob_pq.empty:
+            col_cob1, col_cob2 = st.columns([2, 1])
+            with col_cob1:
+                # Gráfico de cobertura por parque
+                fig_cob, ax_cob = plt.subplots(figsize=(9, max(3, len(df_cob_pq) * 0.38)))
+                cores_cob = [
+                    '#4CAF50' if v >= 80 else '#FF9800' if v >= 50 else '#F44336'
+                    for v in df_cob_pq['Cobertura_%']
+                ]
+                bars = ax_cob.barh(
+                    df_cob_pq['Parque'], df_cob_pq['Cobertura_%'],
+                    color=cores_cob, edgecolor='white', height=0.55
+                )
+                ax_cob.axvline(100, color='#9E9E9E', linewidth=0.8, linestyle='--')
+                for bar, row in zip(bars, df_cob_pq.itertuples()):
+                    w = bar.get_width()
+                    ax_cob.annotate(
+                        f"{w:.0f}% ({row.Maq_Atendidas}/{row.Maq_Total})",
+                        xy=(w, bar.get_y() + bar.get_height() / 2),
+                        xytext=(4, 0), textcoords='offset points',
+                        ha='left', va='center', fontsize=7.5, fontweight='bold'
+                    )
+                ax_cob.set_xlim(0, 115)
+                ax_cob.set_xlabel('Cobertura (%)', fontweight='bold')
+                ax_cob.set_title('% Cobertura de Máquinas por Parque\n(verde ≥80%, amarelo ≥50%, vermelho <50%)',
+                                 fontweight='bold', color='#0D1B3E', fontsize=10)
+                plt.tight_layout()
+                st.pyplot(fig_cob)
+                plt.close()
+            with col_cob2:
+                st.dataframe(
+                    df_cob_pq[['Parque', 'Regional', 'Maq_Atendidas', 'Maq_Total', 'Cobertura_%']]
+                    .rename(columns={'Maq_Atendidas': 'Atendidas', 'Maq_Total': 'Total',
+                                    'Cobertura_%': 'Cobertura%'}),
+                    use_container_width=True, hide_index=True
+                )
 
         # ===== SEMANA ANTERIOR =====
         st.markdown('<div class="section-title">📋 Detalhe Semanal</div>',
@@ -596,7 +689,8 @@ with tab1:
 with tab2:
     st.markdown('<div class="section-title">📝 Atividades Planejadas - PCM</div>',
                 unsafe_allow_html=True)
-    st.caption(f"Semana {sem_corrente['semana_num']} — {sem_corrente['periodo']}")
+    st.caption(f"Semana {sem_corrente['semana_num']} — {sem_corrente['periodo']} "
+               f"| Planejamento × Executado: compara parque + semana + tipo de atividade")
 
     # Formulário
     with st.expander("➕ Adicionar Atividade Planejada", expanded=True):
@@ -657,17 +751,46 @@ with tab2:
             if st.button("🧹 Limpar Todas", use_container_width=True):
                 limpar_pcm()
                 st.rerun()
-    else:
-        st.markdown("""
-        <div style="text-align:center; padding: 40px; color: #7b8794;
-                    background: #f8f9fa; border-radius: 12px; margin-top: 12px;">
-            <div style="font-size: 2.5rem; margin-bottom: 10px;">📋</div>
-            <div style="font-weight: 600;">Nenhuma atividade planejada</div>
-            <div style="font-size: 0.85rem; margin-top: 6px;">
-                Use o formulário acima para adicionar as atividades planejadas pela equipe de PCM.
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+
+        # ── Comparação PCM × Executado ────────────────────────────────────
+        st.markdown("---")
+        st.markdown('<div class="section-title">🔁 Planejado × Executado</div>',
+                    unsafe_allow_html=True)
+        st.caption("Critério: mesmo parque + mesma semana (pela data prevista) + tipo de atividade similar")
+
+        if st.session_state.dados_carregados and ativ_t is not None and not ativ_t.empty:
+            df_pcm_exec = comparar_pcm_executado(pcm, ativ_t)
+            if not df_pcm_exec.empty:
+                n_exec = (df_pcm_exec['Executado?'] == '✅ Sim').sum()
+                n_total = len(df_pcm_exec)
+                aderencia = round(n_exec / n_total * 100, 1) if n_total else 0
+
+                col_ka, col_kb = st.columns([1, 3])
+                with col_ka:
+                    cor_ader = "#4CAF50" if aderencia >= 80 else "#FF9800" if aderencia >= 50 else "#F44336"
+                    st.markdown(f"""
+                    <div style="background:white;border-radius:14px;padding:20px;
+                                box-shadow:0 2px 12px rgba(0,0,0,0.06);
+                                border-top:3px solid {cor_ader};text-align:center;">
+                        <div style="font-size:0.75rem;color:#7b8794;font-weight:600;
+                                    text-transform:uppercase;letter-spacing:0.5px;">
+                            Aderência PCM
+                        </div>
+                        <div style="font-size:2.4rem;font-weight:700;color:{cor_ader};
+                                    line-height:1.2;margin:8px 0;">
+                            {aderencia:.0f}%
+                        </div>
+                        <div style="font-size:0.78rem;color:#546e7a;">
+                            {n_exec} de {n_total} executadas
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with col_kb:
+                    st.dataframe(df_pcm_exec, use_container_width=True, hide_index=True)
+            else:
+                st.info("Não foi possível cruzar os dados. Verifique se as datas previstas estão dentro do período carregado.")
+        else:
+            st.caption("Carregue os dados do EQM ou Excel para ver o comparativo.")
 
 
 # =============================================================================
