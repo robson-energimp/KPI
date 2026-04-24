@@ -36,6 +36,14 @@ from relatorio_pdf_corporativo import (
     gerar_relatorio_completo_por_semana,
     gerar_relatorio_semana_anterior,
 )
+from planejamento_pcm import (
+    ler_programacao_pcm, agrupar_atividades_pcm,
+    carregar_tasks, salvar_tasks, criar_tasks_do_pcm,
+    atualizar_task, obter_tasks_semana, obter_semanas_disponiveis,
+    limpar_tasks_semana, adicionar_task_manual,
+    salvar_historico, carregar_historico, obter_resumo_planejamento,
+    MOTIVOS_NAO_CUMPRIMENTO, EQUIPES_QLW,
+)
 
 # =============================================================================
 # CONFIGURAÇÃO DA PÁGINA
@@ -474,7 +482,7 @@ st.markdown("""
 # =============================================================================
 # TABS
 # =============================================================================
-tab1, tab2, tab3 = st.tabs(["📊 Painel Principal", "📝 Planejamento PCM", "📥 Gerar Relatório"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Painel Principal", "📝 Planejamento PCM", "📋 Planejamento Semanal", "📥 Gerar Relatório"])
 
 
 # =============================================================================
@@ -792,11 +800,337 @@ with tab2:
         else:
             st.caption("Carregue os dados do EQM ou Excel para ver o comparativo.")
 
-
 # =============================================================================
-# TAB 3: GERAR RELATÓRIO
+# TAB 3: PLANEJAMENTO SEMANAL (Atividades PCM)
 # =============================================================================
 with tab3:
+    st.markdown('<div class="section-title">📋 Planejamento Semanal — Atividades via PCM</div>',
+                unsafe_allow_html=True)
+    st.caption("Leitura automática dos arquivos de programação PCM da pasta Atividades_PCM, "
+               "filtrado para equipes QLW (CE, BJS, AGD).")
+
+    # ── Sub-tabs do Planejamento ─────────────────────────────────────────
+    sub_t1, sub_t2, sub_t3 = st.tabs([
+        "📥 Importar Programação", "✅ Acompanhamento Semanal", "📊 Relatório / Histórico"
+    ])
+
+    # ===== SUB-TAB 1: IMPORTAR PROGRAMAÇÃO =====
+    with sub_t1:
+        st.markdown("#### 📥 Importar Atividades da Programação PCM")
+        st.markdown("""
+        <div style="background:#f0f4ff;border-left:4px solid #0D1B3E;border-radius:10px;
+                    padding:10px 16px;margin-bottom:16px;font-size:0.83rem;color:#3d4f6e;">
+            <strong>📌 Como funciona:</strong> O sistema lê os 3 arquivos Excel da pasta
+            <code>Atividades_PCM</code>, busca a aba "Base de Envio" ou "Programação",
+            e filtra as equipes QLW-CE, QLW-BJS e QLW-AGD.
+        </div>
+        """, unsafe_allow_html=True)
+
+        col_imp1, col_imp2 = st.columns([2, 1])
+        with col_imp1:
+            if st.button("🔄 Ler Programação PCM", type="primary", use_container_width=True,
+                         key="btn_ler_pcm_prog"):
+                with st.spinner("Lendo arquivos de programação..."):
+                    df_prog = ler_programacao_pcm()
+                    if not df_prog.empty:
+                        st.session_state['df_prog_pcm'] = df_prog
+                        st.session_state['df_prog_agrupado'] = agrupar_atividades_pcm(df_prog)
+                        st.success(f"✅ {len(df_prog)} registros QLW encontrados "
+                                   f"({len(st.session_state['df_prog_agrupado'])} atividades agrupadas)")
+                    else:
+                        st.warning("⚠️ Nenhuma atividade QLW encontrada nos arquivos.")
+
+        # Mostrar dados importados
+        if 'df_prog_pcm' in st.session_state and not st.session_state['df_prog_pcm'].empty:
+            df_prog = st.session_state['df_prog_pcm']
+            df_agr = st.session_state.get('df_prog_agrupado', pd.DataFrame())
+
+            st.markdown("---")
+            st.markdown("##### 📋 Atividades Encontradas (Detalhado)")
+            cols_show_prog = ['regional', 'equipe', 'aerogerador', 'complemento',
+                              'esquema', 'familia', 'ativo', 'responsavel', 'semana']
+            cols_exist_prog = [c for c in cols_show_prog if c in df_prog.columns]
+            df_show = df_prog[cols_exist_prog].copy()
+            df_show.columns = [c.replace('_', ' ').title() for c in cols_exist_prog]
+            st.dataframe(df_show, use_container_width=True, hide_index=True)
+
+            if not df_agr.empty:
+                st.markdown("##### 📊 Atividades Agrupadas (por Atividade)")
+                cols_agr = ['regional', 'equipe', 'aerogerador', 'complemento',
+                            'esquema', 'familia', 'qtd_os']
+                cols_agr_exist = [c for c in cols_agr if c in df_agr.columns]
+                df_agr_show = df_agr[cols_agr_exist].copy()
+                df_agr_show.columns = [c.replace('_', ' ').title() for c in cols_agr_exist]
+                st.dataframe(df_agr_show, use_container_width=True, hide_index=True)
+
+            # Botão para criar tasks
+            st.markdown("---")
+            col_task1, col_task2 = st.columns([2, 1])
+            with col_task1:
+                semana_import = st.text_input(
+                    "Semana para importação",
+                    value=f"S{sem_proxima['semana_num']}",
+                    help="Identificador da semana (ex: S17, S18)",
+                    key="semana_import_input"
+                )
+            with col_task2:
+                sobrescrever = st.checkbox("Sobrescrever tasks da semana", value=False,
+                                          key="chk_sobrescrever")
+
+            if st.button("📌 Criar Tasks de Acompanhamento", type="primary",
+                         use_container_width=True, key="btn_criar_tasks"):
+                tasks = criar_tasks_do_pcm(df_prog, semana_import, sobrescrever=sobrescrever)
+                salvar_historico(tasks)
+                st.success(f"✅ {len(df_prog)} tasks criadas para {semana_import}!")
+                st.rerun()
+
+        # ── Adicionar Atividade Manual ────────────────────────────────────
+        st.markdown("---")
+        with st.expander("➕ Adicionar Atividade Planejada Manualmente"):
+            with st.form("form_add_plan_manual", clear_on_submit=True):
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    m_regional = st.selectbox("Regional", ["AGD", "BJS", "CE"],
+                                             key="m_reg")
+                    m_equipe = st.selectbox("Equipe", EQUIPES_QLW, key="m_eq")
+                with c2:
+                    m_aero = st.text_input("Aerogerador", placeholder="Ex: SAL-17",
+                                          key="m_aero")
+                    m_comp = st.text_input("Complemento", placeholder="Ex: SAL 17-C2",
+                                          key="m_comp")
+                with c3:
+                    m_ativ = st.text_input("Atividade", placeholder="Ex: INSPEÇÃO PREVENTIVA",
+                                          key="m_ativ")
+                    m_familia = st.selectbox("Família", [
+                        'Gerador', 'Nacelle', 'Torre WTG', 'Conversor',
+                        'Sistema Pitch', 'Aerogerador', 'Outro'
+                    ], key="m_fam")
+                m_resp = st.text_input("Responsável", key="m_resp")
+                m_sem = st.text_input("Semana", value=f"S{sem_proxima['semana_num']}",
+                                     key="m_sem")
+
+                if st.form_submit_button("✅ Adicionar", type="primary",
+                                         use_container_width=True):
+                    if m_aero.strip() and m_ativ.strip():
+                        adicionar_task_manual(
+                            m_sem, m_regional, m_equipe, m_aero.strip().upper(),
+                            m_comp, m_ativ.strip().upper(), m_familia, m_resp
+                        )
+                        salvar_historico()
+                        st.success(f"✅ Atividade manual adicionada: {m_aero.upper()}")
+                        st.rerun()
+                    else:
+                        st.warning("Preencha Aerogerador e Atividade.")
+
+    # ===== SUB-TAB 2: ACOMPANHAMENTO SEMANAL =====
+    with sub_t2:
+        st.markdown("#### ✅ Acompanhamento de Tarefas")
+
+        semanas_disp = obter_semanas_disponiveis()
+        if not semanas_disp:
+            st.info("Nenhuma task criada ainda. Importe a programação PCM na aba anterior.")
+        else:
+            col_sel1, col_sel2 = st.columns([2, 1])
+            with col_sel1:
+                semana_sel = st.selectbox("Selecione a Semana", semanas_disp,
+                                         index=len(semanas_disp)-1,
+                                         key="sel_semana_acomp")
+            with col_sel2:
+                st.markdown("")
+                st.markdown("")
+                retroativo = st.checkbox("🔙 Modo retroativo", value=False,
+                                        help="Permite atualizar semanas anteriores",
+                                        key="chk_retroativo")
+
+            tasks_sem = obter_tasks_semana(semana_sel)
+            if tasks_sem:
+                resumo = obter_resumo_planejamento(semana_sel)
+
+                # KPIs do planejamento
+                cor_ader = ("#4CAF50" if resumo['aderencia'] >= 80
+                           else "#FF9800" if resumo['aderencia'] >= 50
+                           else "#F44336")
+                st.markdown(f"""
+                <div class="kpi-grid">
+                    <div class="kpi-card">
+                        <div class="kpi-label">Total Atividades</div>
+                        <div class="kpi-value">{resumo['total']}</div>
+                        <div class="kpi-sub">Semana {semana_sel}</div>
+                    </div>
+                    <div class="kpi-card green">
+                        <div class="kpi-label">Concluídas</div>
+                        <div class="kpi-value">{resumo['concluidas']}</div>
+                        <div class="kpi-sub">✅ Executadas</div>
+                    </div>
+                    <div class="kpi-card coral">
+                        <div class="kpi-label">Pendentes</div>
+                        <div class="kpi-value">{resumo['pendentes']}</div>
+                        <div class="kpi-sub">⏳ Aguardando</div>
+                    </div>
+                    <div class="kpi-card" style="border-top-color:{cor_ader}">
+                        <div class="kpi-label">Aderência</div>
+                        <div class="kpi-value" style="color:{cor_ader}">{resumo['aderencia']}%</div>
+                        <div class="kpi-sub">Planejado × Executado</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # Formulário de atualização das tasks
+                st.markdown("---")
+                st.markdown("##### 📝 Atualizar Status das Atividades")
+                st.caption("Marque as atividades concluídas e adicione observações quando necessário.")
+
+                with st.form("form_update_tasks", clear_on_submit=False):
+                    updates = []
+                    for i, task in enumerate(tasks_sem):
+                        with st.container():
+                            emoji = "✅" if task['concluido'] else "⬜"
+                            label_task = (f"{emoji} **{task['aerogerador']}** — "
+                                         f"{task['atividade'][:50]} | "
+                                         f"{task.get('familia', '')} | "
+                                         f"Regional: {task['regional']}")
+                            st.markdown(label_task)
+
+                            c1, c2, c3 = st.columns([1, 2, 2])
+                            with c1:
+                                concluido = st.checkbox(
+                                    "Concluído", value=task['concluido'],
+                                    key=f"chk_{task['id']}"
+                                )
+                            with c2:
+                                motivo = st.selectbox(
+                                    "Motivo (se não concluído)",
+                                    [''] + MOTIVOS_NAO_CUMPRIMENTO,
+                                    index=([''] + MOTIVOS_NAO_CUMPRIMENTO).index(
+                                        task['motivo_nao_cumprimento']
+                                    ) if task['motivo_nao_cumprimento'] in MOTIVOS_NAO_CUMPRIMENTO else 0,
+                                    key=f"mot_{task['id']}"
+                                )
+                            with c3:
+                                obs = st.text_input(
+                                    "Observações",
+                                    value=task.get('observacoes', ''),
+                                    key=f"obs_{task['id']}"
+                                )
+                            updates.append({
+                                'task_id': task['id'],
+                                'concluido': concluido,
+                                'motivo': motivo,
+                                'observacoes': obs,
+                            })
+                            st.markdown("<hr style='margin:4px 0;border-color:#eee'>",
+                                       unsafe_allow_html=True)
+
+                    col_btn1, col_btn2 = st.columns(2)
+                    with col_btn1:
+                        salvar_btn = st.form_submit_button(
+                            "💾 Salvar Alterações", type="primary",
+                            use_container_width=True
+                        )
+                    with col_btn2:
+                        pass
+
+                    if salvar_btn:
+                        from planejamento_pcm import atualizar_tasks_em_lote
+                        atualizar_tasks_em_lote(updates)
+                        salvar_historico()
+                        st.success("✅ Alterações salvas e histórico atualizado!")
+                        st.rerun()
+
+                # Botão limpar semana
+                with st.expander("⚠️ Ações Avançadas"):
+                    if st.button(f"🗑️ Limpar tasks da {semana_sel}",
+                                key="btn_limpar_sem"):
+                        limpar_tasks_semana(semana_sel)
+                        salvar_historico()
+                        st.warning(f"Tasks da {semana_sel} removidas.")
+                        st.rerun()
+
+    # ===== SUB-TAB 3: RELATÓRIO / HISTÓRICO =====
+    with sub_t3:
+        st.markdown("#### 📊 Relatório de Planejamento")
+
+        semanas_hist = obter_semanas_disponiveis()
+        if semanas_hist:
+            sem_rel = st.selectbox("Semana", semanas_hist,
+                                  index=len(semanas_hist)-1,
+                                  key="sel_sem_relatorio")
+            resumo_rel = obter_resumo_planejamento(sem_rel)
+            tasks_rel = obter_tasks_semana(sem_rel)
+
+            if tasks_rel:
+                # Tabela resumo
+                df_rel = pd.DataFrame(tasks_rel)
+                cols_rel = ['regional', 'equipe', 'aerogerador', 'atividade',
+                           'familia', 'concluido', 'motivo_nao_cumprimento', 'observacoes']
+                cols_rel = [c for c in cols_rel if c in df_rel.columns]
+                df_rel_show = df_rel[cols_rel].copy()
+                if 'concluido' in df_rel_show.columns:
+                    df_rel_show['concluido'] = df_rel_show['concluido'].map(
+                        {True: '✅ Sim', False: '❌ Não'}
+                    )
+                df_rel_show.columns = [c.replace('_', ' ').title() for c in cols_rel]
+                st.dataframe(df_rel_show, use_container_width=True, hide_index=True)
+
+                # Gráfico de aderência por regional
+                if resumo_rel['por_regional']:
+                    st.markdown("##### 📈 Aderência por Regional")
+                    regs = list(resumo_rel['por_regional'].keys())
+                    aders = [resumo_rel['por_regional'][r]['aderencia'] for r in regs]
+
+                    fig_ad, ax_ad = plt.subplots(figsize=(6, 3))
+                    cores = ['#4CAF50' if a >= 80 else '#FF9800' if a >= 50
+                             else '#F44336' for a in aders]
+                    bars = ax_ad.bar(regs, aders, color=cores, edgecolor='white', width=0.5)
+                    for bar, val in zip(bars, aders):
+                        ax_ad.annotate(f'{val:.0f}%', xy=(bar.get_x() + bar.get_width()/2, val),
+                                      xytext=(0, 5), textcoords='offset points',
+                                      ha='center', fontweight='bold', fontsize=10)
+                    ax_ad.set_ylim(0, 110)
+                    ax_ad.set_ylabel('Aderência (%)')
+                    ax_ad.set_title(f'Aderência ao Planejamento — {sem_rel}',
+                                  fontweight='bold', color='#0D1B3E')
+                    ax_ad.axhline(80, color='#4CAF50', linestyle='--', linewidth=0.8, alpha=0.5)
+                    plt.tight_layout()
+                    st.pyplot(fig_ad)
+                    plt.close()
+
+                # Motivos de não cumprimento
+                if resumo_rel.get('motivos'):
+                    st.markdown("##### 📋 Motivos de Não Cumprimento")
+                    df_motivos = pd.DataFrame([
+                        {'Motivo': k, 'Quantidade': v}
+                        for k, v in resumo_rel['motivos'].items()
+                    ]).sort_values('Quantidade', ascending=False)
+                    st.dataframe(df_motivos, use_container_width=True, hide_index=True)
+
+        # Histórico geral
+        st.markdown("---")
+        st.markdown("##### 📚 Histórico Completo")
+        df_hist = carregar_historico()
+        if not df_hist.empty:
+            st.dataframe(df_hist, use_container_width=True, hide_index=True)
+
+            # Download do histórico
+            buf = io.BytesIO()
+            df_hist.to_excel(buf, index=False)
+            buf.seek(0)
+            st.download_button(
+                "📥 Download Histórico Excel",
+                data=buf.getvalue(),
+                file_name="historico_planejamento_pcm.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="dl_hist_pcm"
+            )
+        else:
+            st.info("Nenhum histórico disponível. Importe a programação e crie tasks.")
+
+
+# =============================================================================
+# TAB 4: GERAR RELATÓRIO
+# =============================================================================
+with tab4:
     st.markdown('<div class="section-title">📥 Gerar Relatório PDF</div>',
                 unsafe_allow_html=True)
 
