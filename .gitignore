@@ -34,3 +34,9 @@ pcm_atividades_semana.json
 
 # PDFs na subpasta
 Resumo de Atividades via PCM/
+
+# Arquivos temporários do planejamento PCM
+Atividades_PCM/tasks_planejamento.json
+Atividades_PCM/historico_planejamento_pcm.xlsx
+Atividades_PCM/.write_test
+~$*

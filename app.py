@@ -37,7 +37,7 @@ from relatorio_pdf_corporativo import (
     gerar_relatorio_semana_anterior,
 )
 from planejamento_pcm import (
-    ler_programacao_pcm, agrupar_atividades_pcm,
+    ler_programacao_pcm, ler_programacao_pcm_upload, agrupar_atividades_pcm,
     carregar_tasks, salvar_tasks, criar_tasks_do_pcm,
     atualizar_task, obter_tasks_semana, obter_semanas_disponiveis,
     limpar_tasks_semana, adicionar_task_manual,
@@ -820,16 +820,19 @@ with tab3:
         st.markdown("""
         <div style="background:#f0f4ff;border-left:4px solid #0D1B3E;border-radius:10px;
                     padding:10px 16px;margin-bottom:16px;font-size:0.83rem;color:#3d4f6e;">
-            <strong>📌 Como funciona:</strong> O sistema lê os 3 arquivos Excel da pasta
-            <code>Atividades_PCM</code>, busca a aba "Base de Envio" ou "Programação",
-            e filtra as equipes QLW-CE, QLW-BJS e QLW-AGD.
+            <strong>📌 Como funciona:</strong> O sistema lê os arquivos Excel de programação,
+            busca a aba "Base de Envio" ou "Programação",
+            e filtra as equipes QLW-CE, QLW-BJS e QLW-AGD.<br>
+            <em>💡 Local:</em> Clique em "Ler Programação PCM" para ler da pasta <code>Atividades_PCM</code>.<br>
+            <em>☁️ Cloud/Upload:</em> Envie os 3 arquivos Excel usando o campo abaixo.
         </div>
         """, unsafe_allow_html=True)
 
-        col_imp1, col_imp2 = st.columns([2, 1])
-        with col_imp1:
-            if st.button("🔄 Ler Programação PCM", type="primary", use_container_width=True,
-                         key="btn_ler_pcm_prog"):
+        # Opção 1: Ler da pasta local (só aparece se pasta existe)
+        pasta_existe = os.path.exists(os.path.join(BASE_DIR, 'Atividades_PCM'))
+        if pasta_existe:
+            if st.button("🔄 Ler Programação PCM (pasta local)", type="primary",
+                         use_container_width=True, key="btn_ler_pcm_prog"):
                 with st.spinner("Lendo arquivos de programação..."):
                     df_prog = ler_programacao_pcm()
                     if not df_prog.empty:
@@ -838,7 +841,30 @@ with tab3:
                         st.success(f"✅ {len(df_prog)} registros QLW encontrados "
                                    f"({len(st.session_state['df_prog_agrupado'])} atividades agrupadas)")
                     else:
-                        st.warning("⚠️ Nenhuma atividade QLW encontrada nos arquivos.")
+                        st.warning("⚠️ Nenhuma atividade QLW encontrada nos arquivos da pasta.")
+
+        # Opção 2: Upload de arquivos (sempre disponível — essencial no Cloud)
+        st.markdown("##### 📤 Upload dos Arquivos de Programação")
+        uploaded_pcm = st.file_uploader(
+            "Envie os arquivos Excel de programação (Ceará, BJS, Água Doce)",
+            type=["xlsx", "xls"],
+            accept_multiple_files=True,
+            help="Envie os 3 arquivos de programação semanal. "
+                 "O sistema encontrará automaticamente a aba e as equipes QLW.",
+            key="upload_pcm_files"
+        )
+        if uploaded_pcm:
+            if st.button("📂 Processar Arquivos Enviados", type="primary",
+                         use_container_width=True, key="btn_processar_upload_pcm"):
+                with st.spinner("Processando arquivos enviados..."):
+                    df_prog = ler_programacao_pcm_upload(uploaded_pcm)
+                    if not df_prog.empty:
+                        st.session_state['df_prog_pcm'] = df_prog
+                        st.session_state['df_prog_agrupado'] = agrupar_atividades_pcm(df_prog)
+                        st.success(f"✅ {len(df_prog)} registros QLW encontrados "
+                                   f"({len(st.session_state['df_prog_agrupado'])} atividades agrupadas)")
+                    else:
+                        st.warning("⚠️ Nenhuma atividade QLW encontrada nos arquivos enviados.")
 
         # Mostrar dados importados
         if 'df_prog_pcm' in st.session_state and not st.session_state['df_prog_pcm'].empty:

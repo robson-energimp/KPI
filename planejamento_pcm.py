@@ -10,14 +10,41 @@ import numpy as np
 import datetime
 import os
 import json
+import tempfile
 import warnings
 
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PASTA_PCM = os.path.join(BASE_DIR, 'Atividades_PCM')
-HISTORICO_FILE = os.path.join(PASTA_PCM, 'historico_planejamento_pcm.xlsx')
-TASKS_FILE = os.path.join(PASTA_PCM, 'tasks_planejamento.json')
+
+
+def _get_writable_dir():
+    """Retorna um diretório gravável para salvar tasks e histórico.
+    No Streamlit Cloud o repo é read-only, então usa diretório temporário.
+    """
+    # Tentar a pasta Atividades_PCM primeiro (funciona local)
+    if os.path.exists(PASTA_PCM):
+        try:
+            test_file = os.path.join(PASTA_PCM, '.write_test')
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.remove(test_file)
+            return PASTA_PCM
+        except (OSError, PermissionError):
+            pass
+    # Fallback: diretório temporário persistente por sessão
+    tmp_dir = os.path.join(tempfile.gettempdir(), 'planejamento_pcm')
+    os.makedirs(tmp_dir, exist_ok=True)
+    return tmp_dir
+
+
+def _get_tasks_file():
+    return os.path.join(_get_writable_dir(), 'tasks_planejamento.json')
+
+
+def _get_historico_file():
+    return os.path.join(_get_writable_dir(), 'historico_planejamento_pcm.xlsx')
 
 # Equipes de qualidade a filtrar
 EQUIPES_QLW = ['QLW-CE', 'QLW-BJS', 'QLW-AGD']
@@ -117,13 +144,120 @@ def _extract_aerogerador_from_complemento(complemento):
     return comp
 
 
+def _processar_excel_pcm(filepath_or_buffer, nome_arquivo='upload.xlsx'):
+    """
+    Processa um único arquivo Excel de programação PCM.
+    Aceita caminho de arquivo (str) ou buffer de upload (BytesIO).
+    Retorna DataFrame filtrado para QLW ou DataFrame vazio.
+    """
+    try:
+        xls = pd.ExcelFile(filepath_or_buffer)
+    except Exception:
+        return pd.DataFrame()
+
+    # Procurar a aba correta
+    target_sheet = None
+    for sn in xls.sheet_names:
+        sn_lower = sn.lower()
+        if 'base' in sn_lower and 'envio' in sn_lower:
+            target_sheet = sn
+            break
+        elif 'programa' in sn_lower:
+            target_sheet = sn
+            # Não quebra aqui, pois 'Base de Envio' tem prioridade
+
+    if target_sheet is None:
+        target_sheet = xls.sheet_names[0]
+
+    # Detectar header — para buffers, usar read_excel direto
+    header_row = 0
+    for h in range(5):
+        try:
+            if isinstance(filepath_or_buffer, str):
+                df_test = pd.read_excel(filepath_or_buffer, sheet_name=target_sheet,
+                                       header=h, nrows=3)
+            else:
+                filepath_or_buffer.seek(0)
+                df_test = pd.read_excel(filepath_or_buffer, sheet_name=target_sheet,
+                                       header=h, nrows=3)
+            for col in df_test.columns:
+                if 'equipe' in str(col).lower().strip():
+                    header_row = h
+                    break
+            else:
+                continue
+            break
+        except Exception:
+            continue
+
+    try:
+        if isinstance(filepath_or_buffer, str):
+            df = pd.read_excel(filepath_or_buffer, sheet_name=target_sheet,
+                              header=header_row)
+        else:
+            filepath_or_buffer.seek(0)
+            df = pd.read_excel(filepath_or_buffer, sheet_name=target_sheet,
+                              header=header_row)
+    except Exception:
+        return pd.DataFrame()
+
+    # Encontrar coluna Equipe
+    col_equipe = _find_column(df, 'equipe')
+    if col_equipe is None:
+        return pd.DataFrame()
+
+    # Filtrar equipes QLW
+    mask_qlw = df[col_equipe].astype(str).str.upper().str.strip().isin(
+        [e.upper() for e in EQUIPES_QLW]
+    )
+    df_qlw = df[mask_qlw].copy()
+
+    if df_qlw.empty:
+        return pd.DataFrame()
+
+    # Mapear colunas para nomes padronizados
+    col_map = {}
+    for key in COLUMN_MAPPINGS:
+        found = _find_column(df_qlw, key)
+        if found:
+            col_map[found] = key
+    df_qlw = df_qlw.rename(columns=col_map)
+
+    # Adicionar metadados
+    df_qlw['arquivo_origem'] = nome_arquivo
+
+    # Extrair regional da equipe
+    if 'equipe' in df_qlw.columns:
+        df_qlw['regional'] = df_qlw['equipe'].apply(_extract_regional_from_equipe)
+
+    # Extrair aerogerador do complemento
+    if 'complemento' in df_qlw.columns:
+        df_qlw['aerogerador'] = df_qlw['complemento'].apply(
+            _extract_aerogerador_from_complemento
+        )
+    elif 'localizacao' in df_qlw.columns:
+        df_qlw['aerogerador'] = df_qlw['localizacao'].astype(str)
+
+    return df_qlw
+
+
+def _padronizar_colunas(df_unificado):
+    """Seleciona e padroniza colunas de interesse."""
+    colunas_finais = [
+        'regional', 'equipe', 'aerogerador', 'complemento',
+        'esquema', 'ativo', 'familia', 'plano',
+        'dt_inicio', 'dt_termino', 'responsavel',
+        'semana', 'observacao', 'status_os', 'arquivo_origem'
+    ]
+    colunas_existentes = [c for c in colunas_finais if c in df_unificado.columns]
+    return df_unificado[colunas_existentes].copy()
+
+
 def ler_programacao_pcm(pasta=None):
     """
-    Lê todos os arquivos Excel da pasta Atividades_PCM,
+    Lê todos os arquivos Excel da pasta Atividades_PCM (modo local),
     busca a aba 'Base de Envio' ou 'Programação',
     filtra equipes QLW e retorna DataFrame unificado.
-
-    Retorna: DataFrame com colunas padronizadas ou DataFrame vazio.
     """
     if pasta is None:
         pasta = PASTA_PCM
@@ -132,105 +266,49 @@ def ler_programacao_pcm(pasta=None):
         return pd.DataFrame()
 
     all_data = []
-
     for arquivo in os.listdir(pasta):
         if not arquivo.endswith(('.xlsx', '.xls')):
             continue
-        if arquivo.startswith('~$'):  # arquivos temporários do Excel
+        if arquivo.startswith('~$'):
             continue
         if 'historico' in arquivo.lower() or 'tasks' in arquivo.lower():
             continue
 
         filepath = os.path.join(pasta, arquivo)
-
-        try:
-            xls = pd.ExcelFile(filepath)
-        except Exception:
-            continue
-
-        # Procurar a aba correta
-        target_sheet = None
-        for sn in xls.sheet_names:
-            sn_lower = sn.lower()
-            if 'base' in sn_lower and 'envio' in sn_lower:
-                target_sheet = sn
-                break
-            elif 'programa' in sn_lower:
-                target_sheet = sn
-                # Não quebra aqui, pois 'Base de Envio' tem prioridade
-
-        if target_sheet is None:
-            # Usa a primeira aba como fallback
-            target_sheet = xls.sheet_names[0]
-
-        # Detectar header
-        header_row = _detect_header_row(filepath, target_sheet)
-
-        try:
-            df = pd.read_excel(filepath, sheet_name=target_sheet,
-                              header=header_row)
-        except Exception:
-            continue
-
-        # Encontrar coluna Equipe
-        col_equipe = _find_column(df, 'equipe')
-        if col_equipe is None:
-            continue
-
-        # Filtrar equipes QLW
-        mask_qlw = df[col_equipe].astype(str).str.upper().str.strip().isin(
-            [e.upper() for e in EQUIPES_QLW]
-        )
-        df_qlw = df[mask_qlw].copy()
-
-        if df_qlw.empty:
-            continue
-
-        # Mapear colunas para nomes padronizados
-        col_map = {}
-        for key in COLUMN_MAPPINGS:
-            found = _find_column(df_qlw, key)
-            if found:
-                col_map[found] = key
-
-        df_qlw = df_qlw.rename(columns=col_map)
-
-        # Adicionar metadados
-        df_qlw['arquivo_origem'] = arquivo
-
-        # Extrair regional da equipe
-        if 'equipe' in df_qlw.columns:
-            df_qlw['regional'] = df_qlw['equipe'].apply(
-                _extract_regional_from_equipe
-            )
-
-        # Extrair aerogerador do complemento
-        if 'complemento' in df_qlw.columns:
-            df_qlw['aerogerador'] = df_qlw['complemento'].apply(
-                _extract_aerogerador_from_complemento
-            )
-        elif 'localizacao' in df_qlw.columns:
-            df_qlw['aerogerador'] = df_qlw['localizacao'].astype(str)
-
-        all_data.append(df_qlw)
+        df_qlw = _processar_excel_pcm(filepath, nome_arquivo=arquivo)
+        if not df_qlw.empty:
+            all_data.append(df_qlw)
 
     if not all_data:
         return pd.DataFrame()
 
-    # Unificar DataFrames
     df_unificado = pd.concat(all_data, ignore_index=True)
+    return _padronizar_colunas(df_unificado)
 
-    # Selecionar e padronizar colunas de interesse
-    colunas_finais = [
-        'regional', 'equipe', 'aerogerador', 'complemento',
-        'esquema', 'ativo', 'familia', 'plano',
-        'dt_inicio', 'dt_termino', 'responsavel',
-        'semana', 'observacao', 'status_os', 'arquivo_origem'
-    ]
-    colunas_existentes = [c for c in colunas_finais if c in df_unificado.columns]
-    df_resultado = df_unificado[colunas_existentes].copy()
 
-    return df_resultado
+def ler_programacao_pcm_upload(uploaded_files):
+    """
+    Lê arquivos Excel enviados via upload (Streamlit Cloud).
+    uploaded_files: lista de UploadedFile do Streamlit.
+    Retorna DataFrame unificado filtrado para QLW.
+    """
+    if not uploaded_files:
+        return pd.DataFrame()
+
+    all_data = []
+    for uf in uploaded_files:
+        import io
+        buf = io.BytesIO(uf.getvalue())
+        nome = uf.name
+        df_qlw = _processar_excel_pcm(buf, nome_arquivo=nome)
+        if not df_qlw.empty:
+            all_data.append(df_qlw)
+
+    if not all_data:
+        return pd.DataFrame()
+
+    df_unificado = pd.concat(all_data, ignore_index=True)
+    return _padronizar_colunas(df_unificado)
 
 
 def agrupar_atividades_pcm(df_pcm):
@@ -299,9 +377,10 @@ def agrupar_atividades_pcm(df_pcm):
 # =============================================================================
 def carregar_tasks():
     """Carrega as tasks de planejamento do JSON."""
-    if os.path.exists(TASKS_FILE):
+    tasks_file = _get_tasks_file()
+    if os.path.exists(tasks_file):
         try:
-            with open(TASKS_FILE, 'r', encoding='utf-8') as f:
+            with open(tasks_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception:
             return []
@@ -310,8 +389,9 @@ def carregar_tasks():
 
 def salvar_tasks(tasks):
     """Salva tasks de planejamento no JSON."""
-    os.makedirs(os.path.dirname(TASKS_FILE), exist_ok=True)
-    with open(TASKS_FILE, 'w', encoding='utf-8') as f:
+    tasks_file = _get_tasks_file()
+    os.makedirs(os.path.dirname(tasks_file), exist_ok=True)
+    with open(tasks_file, 'w', encoding='utf-8') as f:
         json.dump(tasks, f, ensure_ascii=False, indent=2, default=str)
 
 
@@ -461,7 +541,7 @@ def salvar_historico(tasks=None, filepath=None):
     Cada execução adiciona/atualiza os registros da semana correspondente.
     """
     if filepath is None:
-        filepath = HISTORICO_FILE
+        filepath = _get_historico_file()
 
     if tasks is None:
         tasks = carregar_tasks()
@@ -531,7 +611,7 @@ def salvar_historico(tasks=None, filepath=None):
 def carregar_historico(filepath=None):
     """Carrega histórico do Excel."""
     if filepath is None:
-        filepath = HISTORICO_FILE
+        filepath = _get_historico_file()
     if not os.path.exists(filepath):
         return pd.DataFrame()
     try:
