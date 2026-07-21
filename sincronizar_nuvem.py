@@ -74,7 +74,7 @@ def atualizar_dados():
         os_qlw['grupo_equipe'] = os_qlw['cod_equipe'].apply(equipe_grupo)
 
         tabela = os_qlw.groupby(
-            ['grupo_equipe', 'data_inicio_exec', 'data_fim_exec', 'aerogerador', 'desc_especie', 'desc_esquema']
+            ['grupo_equipe', 'data_inicio_exec', 'data_fim_exec', 'Aerogerador', 'desc_especie', 'desc_esquema']
         ).size().reset_index(name='quantidade')
         
         tabela.to_excel(ARQUIVO_EXCEL, index=False)
