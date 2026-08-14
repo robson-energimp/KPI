@@ -84,34 +84,25 @@ def consultaOsWTG(t1, t2):
     if not isinstance(t2, str):
         t2 = t2.strftime('%Y-%m-%d')
 
-    txt = """select \
-      C.cod_ss \
-    , C.desc_numero_ss \
-    , A.cod_os \
-    , A.desc_numero_os \
-    , A.cod_equipe \
-    , A.cod_especie \
-    , A.cod_esquema \
-    , F.desc_esquema \
-    , E.desc_especie \
-    , right(A.cod_instalacao, 3) || '-' || right(D.desc_localizacao, 2) as Aerogerador \
-    , A.data_inicio_exec \
-    , A.data_fim_exec \
-    , A.desc_defeito \
-    , A.desc_causa_primaria \
-    , A.desc_origem \
-    , A.text_observacao \
-    , B.desc_carac \
-    , B.resposta \
-    from "EQM_BI_ENERGIMP".bi_osexec A
-    left join "EQM_BI_ENERGIMP".bi_osexec_carac B on A.cod_os = B.cod_os
-    left join "EQM_BI_ENERGIMP".bi_ss C on A.cod_os = C.cod_os \
-    left join "EQM_BI_ENERGIMP".bi_especie E on E.cod_especie = A.cod_especie \
-    left join "EQM_BI_ENERGIMP".bi_esquema F on F.cod_esquema = A.cod_esquema \
-    left join "EQM_BI_ENERGIMP".bi_ativo D on A.cod_ativo = D.cod_ativo """ \
-    + f"where A.data_inicio_exec >= '{t1}' and A.data_inicio_exec <= '{t2}' " \
-    + f"and A.os_fechada = 'Sim' and A.desc_estado = 'EXECUTADA' " \
-    + "order by A.data_criacao"
+    txt = f"""SELECT
+        A.cod_os,
+        A.desc_numero_os,
+        A.cod_equipe,
+        A.cod_especie,
+        A.cod_esquema,
+        F.desc_esquema,
+        E.desc_especie,
+        right(A.cod_instalacao, 3) || '-' || right(D.desc_localizacao, 2) as aerogerador,
+        A.data_inicio_exec,
+        A.data_fim_exec
+    FROM "EQM_BI_ENERGIMP".bi_osexec A
+    LEFT JOIN "EQM_BI_ENERGIMP".bi_especie E ON E.cod_especie = A.cod_especie
+    LEFT JOIN "EQM_BI_ENERGIMP".bi_esquema F ON F.cod_esquema = A.cod_esquema
+    LEFT JOIN "EQM_BI_ENERGIMP".bi_ativo D ON A.cod_ativo = D.cod_ativo
+    WHERE A.data_inicio_exec >= '{t1}' AND A.data_inicio_exec <= '{t2}'
+    AND A.os_fechada = 'Sim' AND A.desc_estado = 'EXECUTADA'
+    AND A.desc_numero_os LIKE '%QLW%'
+    ORDER BY A.data_inicio_exec"""
 
     return consultaEQM(txt)
 
@@ -145,9 +136,15 @@ def equipe_grupo(cod_equipe):
 OS_QLW = CondOS_WTG[CondOS_WTG['desc_numero_os'].str.contains('QLW', na=False)].copy()
 OS_QLW['grupo_equipe'] = OS_QLW['cod_equipe'].apply(equipe_grupo)
 
+# Preencher valores nulos nas colunas de agrupamento para evitar descarte silencioso no groupby
+OS_QLW['aerogerador']  = OS_QLW['aerogerador'].fillna('N/D')
+OS_QLW['desc_especie'] = OS_QLW['desc_especie'].fillna('N/D')
+OS_QLW['desc_esquema'] = OS_QLW['desc_esquema'].fillna('N/D')
+
 # Agrupe e conte
 tabela_causas = OS_QLW.groupby(
-    ['grupo_equipe', 'data_inicio_exec', 'data_fim_exec', 'aerogerador', 'desc_especie', 'desc_esquema']
+    ['grupo_equipe', 'data_inicio_exec', 'data_fim_exec', 'aerogerador', 'desc_especie', 'desc_esquema'],
+    dropna=False
 ).size().reset_index(name='quantidade')
 
 # Salvar Excel

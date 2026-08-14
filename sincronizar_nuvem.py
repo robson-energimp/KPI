@@ -132,6 +132,10 @@ def sincronizar_github():
         subprocess.run(["git", "add", "Resumo_Atividades_Qualidade_2026.xlsx"], check=True)
         subprocess.run(["git", "add", "Resumo_Atividades_Qualidade_2026.csv"],  check=True)
 
+        # Adiciona arquivos e histórico de planejamento PCM
+        subprocess.run(["git", "add", "Atividades_PCM"], check=False)
+        subprocess.run(["git", "add", "historico_planejamento_pcm.xlsx"], check=False)
+
         # Adiciona o JSON do PCM caso exista e tenha sido modificado
         if os.path.exists("pcm_atividades_semana.json"):
             subprocess.run(["git", "add", "pcm_atividades_semana.json"], check=False)
