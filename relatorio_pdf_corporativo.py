@@ -968,7 +968,10 @@ def gerar_relatorio_completo_por_semana(ativ_turbinas, ativ_auditorias,
             pdf.ln(4)
 
             # Tabela de turbinas
-            detalhe = df_turb_sem.groupby(['grupo_equipe', 'aerogerador', 'parque']).agg(
+            detalhe = df_turb_sem.groupby(
+                ['grupo_equipe', 'aerogerador', 'parque'],
+                dropna=False
+            ).agg(
                 tipo=('desc_esquema', lambda x: ' | '.join(sorted(x.unique()))),
                 componentes=('componentes', lambda x: ', '.join(
                     sorted(set(', '.join(x.dropna()).split(', ')))) if not x.dropna().empty else '-'),
@@ -1212,7 +1215,10 @@ def gerar_relatorio_semana_anterior(ativ_turbinas, ativ_auditorias, pcm_atividad
     # SEÇÃO 3: Tabela detalhada de turbinas
     if not df_turb.empty:
         pdf.titulo_secao('3. TURBINAS ATENDIDAS — DETALHE COMPLETO')
-        detalhe = df_turb.groupby(['grupo_equipe', 'aerogerador', 'parque']).agg(
+        detalhe = df_turb.groupby(
+            ['grupo_equipe', 'aerogerador', 'parque'],
+            dropna=False
+        ).agg(
             tipo=('desc_esquema', lambda x: ' | '.join(sorted(x.unique()))),
             componentes=('componentes', lambda x: ', '.join(
                 sorted(set(', '.join(x.dropna()).split(', ')))) if not x.dropna().empty else '-'),

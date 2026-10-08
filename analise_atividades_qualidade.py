@@ -64,6 +64,12 @@ print(especies.to_string(index=False))
 
 # Extrair data e parque
 OS_QLW_unico['data_atividade'] = pd.to_datetime(OS_QLW_unico['data_inicio_exec']).dt.date
+
+# Preencher valores nulos nas colunas de agrupamento para evitar descarte silencioso no groupby
+OS_QLW_unico['aerogerador']  = OS_QLW_unico['aerogerador'].fillna('N/D')
+OS_QLW_unico['desc_especie'] = OS_QLW_unico['desc_especie'].fillna('N/D')
+OS_QLW_unico['desc_esquema'] = OS_QLW_unico['desc_esquema'].fillna('N/D')
+
 OS_QLW_unico['parque'] = OS_QLW_unico['aerogerador'].str[:3]
 
 # Separar OS complementares (Avaliação de Equipe acompanha outra inspeção)
@@ -78,7 +84,8 @@ OS_principais['tipo_atividade'] = OS_principais['desc_esquema']
 # Agrupar OS em ATIVIDADES:
 # Chave: grupo_equipe + data + aerogerador + tipo_atividade
 atividades = OS_principais.groupby(
-    ['grupo_equipe', 'data_atividade', 'aerogerador', 'parque', 'tipo_atividade']
+    ['grupo_equipe', 'data_atividade', 'aerogerador', 'parque', 'tipo_atividade'],
+    dropna=False
 ).agg(
     qtd_os=('cod_os', 'nunique'),
     componentes=('desc_especie', lambda x: ', '.join(sorted(x.unique()))),
@@ -89,7 +96,8 @@ atividades = OS_principais.groupby(
 
 # Verificar se teve Avaliação de Equipe associada
 avaliacoes_resumo = OS_avaliacoes.groupby(
-    ['data_atividade', 'aerogerador']
+    ['data_atividade', 'aerogerador'],
+    dropna=False
 ).agg(teve_avaliacao=('cod_os', 'nunique')).reset_index()
 
 atividades = atividades.merge(
@@ -110,8 +118,9 @@ print(f"Total de ATIVIDADES identificadas:     {len(atividades)}")
 print(f"OS de Avaliação de Equipe (complementar): {OS_avaliacoes['cod_os'].nunique()}")
 print(f"\nTipos de atividade encontrados:")
 for tipo, qtd in atividades['tipo_atividade'].value_counts().items():
-    cod = atividades[atividades['tipo_atividade'] == tipo]['cod_esquema'].iloc[0]
-    print(f"  {cod:20s} │ {tipo:50s} │ {qtd} atividades")
+    cod = str(atividades[atividades['tipo_atividade'] == tipo]['cod_esquema'].iloc[0])
+    tipo_str = str(tipo)
+    print(f"  {cod:20s} │ {tipo_str:50s} │ {qtd} atividades")
 
 # =============================================================================
 # CÉLULA 4 - TABELAS SEPARADAS POR TIPO DE ATIVIDADE
@@ -123,7 +132,8 @@ print(f"{'='*80}")
 
 for tipo in atividades['tipo_atividade'].value_counts().index:
     df_tipo = atividades[atividades['tipo_atividade'] == tipo]
-    cod = df_tipo['cod_esquema'].iloc[0]
+    cod = str(df_tipo['cod_esquema'].iloc[0])
+    tipo_str = str(tipo)
     
     resumo = df_tipo.groupby('grupo_equipe').agg(
         atividades=('aerogerador', 'count'),
@@ -137,7 +147,7 @@ for tipo in atividades['tipo_atividade'].value_counts().index:
                        'WTGs Distintos', 'Parques', 'Com Avaliação']
     
     print(f"\n┌{'─'*62}┐")
-    print(f"│ [{cod}] {tipo:<{60-len(cod)-4}s} │")
+    print(f"│ [{cod}] {tipo_str:<{60-len(cod)-4}} │")
     print(f"│ Total: {len(df_tipo)} atividades | {df_tipo['qtd_os_total'].sum()} OS{' '*(43-len(str(len(df_tipo)))-len(str(df_tipo['qtd_os_total'].sum())))}│")
     print(f"└{'─'*62}┘")
     print(resumo.to_string(index=False))

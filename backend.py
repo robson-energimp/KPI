@@ -150,22 +150,24 @@ def buscar_os_wtg(data_inicio, data_fim):
     t2 = data_fim.strftime('%Y-%m-%d') if not isinstance(data_fim, str) else data_fim
 
     sql = f"""SELECT
-        C.cod_ss, C.desc_numero_ss, A.cod_os, A.desc_numero_os,
-        A.cod_equipe, A.cod_especie, A.cod_esquema, F.desc_esquema,
+        A.cod_os,
+        A.desc_numero_os,
+        A.cod_equipe,
+        A.cod_especie,
+        A.cod_esquema,
+        F.desc_esquema,
         E.desc_especie,
-        right(A.cod_instalacao, 3) || '-' || right(D.desc_localizacao, 2) as Aerogerador,
-        A.data_inicio_exec, A.data_fim_exec, A.desc_defeito,
-        A.desc_causa_primaria, A.desc_origem, A.text_observacao,
-        B.desc_carac, B.resposta
+        right(A.cod_instalacao, 3) || '-' || right(D.desc_localizacao, 2) as aerogerador,
+        A.data_inicio_exec,
+        A.data_fim_exec
     FROM "EQM_BI_ENERGIMP".bi_osexec A
-    LEFT JOIN "EQM_BI_ENERGIMP".bi_osexec_carac B ON A.cod_os = B.cod_os
-    LEFT JOIN "EQM_BI_ENERGIMP".bi_ss C ON A.cod_os = C.cod_os
     LEFT JOIN "EQM_BI_ENERGIMP".bi_especie E ON E.cod_especie = A.cod_especie
     LEFT JOIN "EQM_BI_ENERGIMP".bi_esquema F ON F.cod_esquema = A.cod_esquema
     LEFT JOIN "EQM_BI_ENERGIMP".bi_ativo D ON A.cod_ativo = D.cod_ativo
     WHERE A.data_inicio_exec >= '{t1}' AND A.data_inicio_exec <= '{t2}'
     AND A.os_fechada = 'Sim' AND A.desc_estado = 'EXECUTADA'
-    ORDER BY A.data_criacao"""
+    AND A.desc_numero_os LIKE '%QLW%'
+    ORDER BY A.data_inicio_exec"""
 
     return consultar_eqm(sql)
 
@@ -178,8 +180,14 @@ def processar_dados_qualidade(df_raw):
     os_qlw = df_raw[df_raw['desc_numero_os'].str.contains('QLW', na=False)].copy()
     os_qlw['grupo_equipe'] = os_qlw['cod_equipe'].apply(equipe_grupo)
 
+    # Preencher valores nulos nas colunas de agrupamento para evitar descarte silencioso no groupby
+    os_qlw['aerogerador']  = os_qlw['aerogerador'].fillna('N/D')
+    os_qlw['desc_especie'] = os_qlw['desc_especie'].fillna('N/D')
+    os_qlw['desc_esquema'] = os_qlw['desc_esquema'].fillna('N/D')
+
     tabela = os_qlw.groupby(
-        ['grupo_equipe', 'data_inicio_exec', 'data_fim_exec', 'aerogerador', 'desc_especie', 'desc_esquema']
+        ['grupo_equipe', 'data_inicio_exec', 'data_fim_exec', 'aerogerador', 'desc_especie', 'desc_esquema'],
+        dropna=False
     ).size().reset_index(name='quantidade')
 
     return tabela
@@ -224,7 +232,8 @@ def processar_atividades(df):
     if not df_turbinas.empty:
         ativ_turbinas = df_turbinas.groupby(
             ['grupo_equipe', 'data_inicio_exec', 'aerogerador', 'parque',
-             'desc_esquema', 'ano_semana', 'semana_num', 'periodo_semana']
+             'desc_esquema', 'ano_semana', 'semana_num', 'periodo_semana'],
+            dropna=False
         ).agg(
             qtd_os=('quantidade', 'sum'),
             componentes=('desc_especie', lambda x: ', '.join(sorted(x.unique())))
@@ -235,7 +244,8 @@ def processar_atividades(df):
     # Agrupar auditorias
     if not df_auditorias.empty:
         ativ_auditorias = df_auditorias.groupby(
-            ['grupo_equipe', 'ano_semana', 'semana_num', 'periodo_semana']
+            ['grupo_equipe', 'ano_semana', 'semana_num', 'periodo_semana'],
+            dropna=False
         ).agg(
             ferramentas_auditadas=('aerogerador', 'nunique'),
             qtd_os=('quantidade', 'sum'),
@@ -247,7 +257,8 @@ def processar_atividades(df):
     # Agrupar avaliações de equipe (antes invisíveis)
     if not df_avaliacoes.empty:
         ativ_avaliacoes = df_avaliacoes.groupby(
-            ['grupo_equipe', 'ano_semana', 'semana_num', 'periodo_semana']
+            ['grupo_equipe', 'ano_semana', 'semana_num', 'periodo_semana'],
+            dropna=False
         ).agg(
             qtd_avaliacoes=('quantidade', 'sum'),
             desc_esquema=('desc_esquema', 'first')

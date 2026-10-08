@@ -138,7 +138,8 @@ df_auditorias = df[df['eh_auditoria']].copy()
 # --- ATIVIDADES EM TURBINAS ---
 ativ_turbinas = df_turbinas.groupby(
     ['grupo_equipe', 'data_inicio_exec', 'aerogerador', 'parque',
-     'desc_esquema', 'ano_semana', 'semana_num', 'periodo_semana']
+     'desc_esquema', 'ano_semana', 'semana_num', 'periodo_semana'],
+    dropna=False
 ).agg(
     qtd_os=('quantidade', 'sum'),
     componentes=('desc_especie', lambda x: ', '.join(sorted(x.unique())))
@@ -146,7 +147,8 @@ ativ_turbinas = df_turbinas.groupby(
 
 # --- AUDITORIAS DE FERRAMENTAS (agrupadas por regional, nao por maquina) ---
 ativ_auditorias = df_auditorias.groupby(
-    ['grupo_equipe', 'ano_semana', 'semana_num', 'periodo_semana']
+    ['grupo_equipe', 'ano_semana', 'semana_num', 'periodo_semana'],
+    dropna=False
 ).agg(
     ferramentas_auditadas=('aerogerador', 'nunique'),
     qtd_os=('quantidade', 'sum'),
